@@ -1,0 +1,53 @@
+syntax = "proto3";
+
+package chat.v1;
+
+// Internal API between the gateway (connection layer) and the chat service (logic layer).
+service Chat {
+  // Validate, number and publish one message. Idempotent on (room, user, client_msg_id).
+  rpc SendMessage(SendMessageRequest) returns (SendMessageResponse);
+  // Check that the user may enter the room before the gateway subscribes to it.
+  rpc CheckJoin(CheckJoinRequest) returns (CheckJoinResponse);
+  // Messages with seq greater than after_seq, oldest first.
+  rpc FetchMessages(FetchMessagesRequest) returns (FetchMessagesResponse);
+}
+
+message SendMessageRequest {
+  int64 user_id = 1;
+  string user_name = 2;
+  int64 room_id = 3;
+  string client_msg_id = 4;
+  string body = 5;
+}
+
+message SendMessageResponse {
+  int64 message_id = 1;
+  int64 seq = 2;
+  // True when this client_msg_id was already processed and the earlier result is returned.
+  bool duplicate = 3;
+}
+
+message CheckJoinRequest {
+  int64 user_id = 1;
+  int64 room_id = 2;
+}
+
+message CheckJoinResponse {
+  // "group" or "live"
+  string room_type = 1;
+  int64 latest_seq = 2;
+}
+
+message FetchMessagesRequest {
+  int64 user_id = 1;
+  int64 room_id = 2;
+  int64 after_seq = 3;
+  int32 limit = 4;
+}
+
+message FetchMessagesResponse {
+  // Each entry is one message already encoded as JSON, so the gateway forwards it untouched.
+  repeated string messages = 1;
+  int64 latest_seq = 2;
+  bool has_more = 3;
+}

@@ -1,0 +1,20 @@
+[package]
+name = "chat-service"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+common.workspace = true
+
+anyhow.workspace = true
+async-nats.workspace = true
+axum.workspace = true
+rdkafka.workspace = true
+redis.workspace = true
+scylla.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+tokio.workspace = true
+tonic.workspace = true
+tracing.workspace = true

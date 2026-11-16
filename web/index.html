@@ -1,0 +1,347 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>채팅 서버 테스트</title>
+<style>
+  :root {
+    --bg: #f8fafc; --panel: #ffffff; --line: #e2e8f0; --text: #0f172a; --muted: #64748b;
+    --accent: #2563eb; --mine: #dbeafe; --warn: #b45309;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f172a; --panel: #1e293b; --line: #334155; --text: #f1f5f9; --muted: #94a3b8;
+      --accent: #60a5fa; --mine: #1e3a8a; --warn: #fbbf24;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.5 system-ui, sans-serif; background: var(--bg); color: var(--text); }
+  header { display: flex; gap: 12px; align-items: center; padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  header h1 { font-size: 16px; margin: 0; }
+  #status { margin-left: auto; font-size: 13px; color: var(--muted); }
+  main { display: grid; grid-template-columns: 260px 1fr; height: calc(100vh - 49px); }
+  aside { border-right: 1px solid var(--line); background: var(--panel); overflow-y: auto; padding: 12px; }
+  section { display: flex; flex-direction: column; min-width: 0; }
+  h2 { font-size: 13px; color: var(--muted); margin: 12px 0 6px; font-weight: 600; }
+  input, select, button { font: inherit; padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--text); }
+  button { cursor: pointer; background: var(--accent); color: #fff; border-color: transparent; }
+  button.plain { background: transparent; color: var(--text); border-color: var(--line); }
+  form { display: flex; gap: 6px; flex-wrap: wrap; }
+  form input { flex: 1; min-width: 0; }
+  .room { display: flex; justify-content: space-between; gap: 8px; padding: 8px; border-radius: 6px; cursor: pointer; }
+  .room:hover, .room.active { background: var(--bg); }
+  .tag { font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; align-self: center; white-space: nowrap; }
+  #roomTitle { padding: 10px 16px; border-bottom: 1px solid var(--line); font-weight: 600; }
+  #messages { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 6px; }
+  .msg { max-width: 70%; padding: 6px 10px; border-radius: 10px; background: var(--panel); border: 1px solid var(--line); overflow-wrap: anywhere; }
+  .msg.mine { align-self: flex-end; background: var(--mine); border-color: transparent; }
+  .msg.pending { opacity: .55; }
+  .msg .meta { font-size: 11px; color: var(--muted); }
+  .note { align-self: center; font-size: 12px; color: var(--warn); }
+  #composer { padding: 12px 16px; border-top: 1px solid var(--line); background: var(--panel); }
+  .hidden { display: none !important; }
+  #login { max-width: 360px; margin: 80px auto; padding: 24px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+  @media (max-width: 640px) { main { grid-template-columns: 1fr; height: auto; } aside { border-right: 0; border-bottom: 1px solid var(--line); } #messages { min-height: 50vh; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>채팅 서버 테스트</h1>
+  <span id="who"></span>
+  <button id="logout" class="plain hidden">로그아웃</button>
+  <span id="status">연결 안 됨</span>
+</header>
+
+<div id="login">
+  <h2 style="margin-top:0">이름을 입력하세요</h2>
+  <form id="loginForm">
+    <input id="loginName" maxlength="32" placeholder="이름" required autofocus>
+    <button>들어가기</button>
+  </form>
+</div>
+
+<main id="app" class="hidden">
+  <aside>
+    <h2>방 만들기</h2>
+    <form id="createForm">
+      <input id="roomName" maxlength="64" placeholder="방 이름" required>
+      <select id="roomType">
+        <option value="group">그룹</option>
+        <option value="live">라이브</option>
+      </select>
+      <button>만들기</button>
+    </form>
+    <h2>방 목록 <button id="refresh" class="plain" style="padding:0 6px;font-size:12px">새로고침</button></h2>
+    <div id="rooms"></div>
+  </aside>
+  <section>
+    <div id="roomTitle">방을 선택하세요</div>
+    <div id="messages"></div>
+    <form id="composer" class="hidden">
+      <input id="body" maxlength="2000" placeholder="메시지 입력" autocomplete="off">
+      <button>보내기</button>
+    </form>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const HISTORY_ON_FIRST_JOIN = 50;
+
+const state = {
+  token: sessionStorage.getItem('token'),
+  user: JSON.parse(sessionStorage.getItem('user') || 'null'),
+  ws: null,
+  attempts: 0,
+  pingTimer: null,
+  room: null,            // { id, name, type }
+  lastSeq: new Map(),    // room id -> highest seq received
+  messages: new Map(),   // seq -> message, for the open room
+  pending: new Map(),    // client_msg_id -> { room_id, body }
+  syncing: false,
+};
+
+// ---------------------------------------------------------------- REST
+async function api(path, options = {}) {
+  const res = await fetch('/api' + path, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(state.token ? { Authorization: 'Bearer ' + state.token } : {}),
+    },
+    body: options.body ? JSON.stringify(options.body) : undefined,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 401) { logout(); throw new Error('다시 로그인해 주세요'); }
+  if (!res.ok) throw new Error(data.message || ('요청 실패 ' + res.status));
+  return data;
+}
+
+async function loadRooms() {
+  const { rooms } = await api('/rooms');
+  const box = $('rooms');
+  box.replaceChildren();
+  for (const room of rooms) {
+    const row = document.createElement('div');
+    row.className = 'room' + (state.room && state.room.id === room.id ? ' active' : '');
+    const name = document.createElement('span');
+    name.textContent = room.name;
+    const tag = document.createElement('span');
+    tag.className = 'tag';
+    tag.textContent = room.type === 'live' ? '라이브' : (room.member ? '그룹' : '그룹 · 미참여');
+    row.append(name, tag);
+    row.onclick = () => openRoom(room).catch((e) => note(e.message));
+    box.append(row);
+  }
+}
+
+// ---------------------------------------------------------------- WebSocket
+function connect() {
+  if (!state.token) return;
+  const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
+  const ws = new WebSocket(`${scheme}://${location.host}/ws?token=${encodeURIComponent(state.token)}`);
+  state.ws = ws;
+  setStatus('연결 중…');
+
+  ws.onopen = () => {
+    state.attempts = 0;
+    state.pingTimer = setInterval(() => send({ t: 'ping' }), 25000);
+  };
+  ws.onmessage = (event) => onFrame(JSON.parse(event.data));
+  ws.onclose = () => {
+    clearInterval(state.pingTimer);
+    if (state.ws !== ws) return;
+    state.ws = null;
+    state.syncing = false;
+    if (!state.token) return;
+    // Exponential backoff with jitter, so a gateway restart does not cause a stampede.
+    const delay = Math.min(30000, 1000 * 2 ** state.attempts++) * (0.5 + Math.random() / 2);
+    setStatus(`끊김 · ${Math.round(delay / 1000)}초 뒤 재접속`);
+    setTimeout(connect, delay);
+  };
+}
+
+function send(frame) {
+  if (state.ws && state.ws.readyState === WebSocket.OPEN) state.ws.send(JSON.stringify(frame));
+}
+
+function onFrame(frame) {
+  switch (frame.t) {
+    case 'ready':
+      setStatus(`연결됨 · ${frame.gateway}`);
+      if (state.room) send({ t: 'join', room_id: state.room.id });
+      break;
+    case 'joined': {
+      if (!state.room || frame.room_id !== state.room.id) break;
+      // First visit: load the last few messages. Later: everything missed since last time.
+      if (!state.lastSeq.has(frame.room_id)) {
+        state.lastSeq.set(frame.room_id, Math.max(0, frame.latest_seq - HISTORY_ON_FIRST_JOIN));
+      }
+      requestSync();
+      // Anything sent while disconnected goes out again with the same id; the server
+      // recognizes a repeat and does not create a second message.
+      for (const [id, p] of state.pending) {
+        if (p.room_id === frame.room_id) send({ t: 'send', room_id: p.room_id, client_msg_id: id, body: p.body });
+      }
+      break;
+    }
+    case 'message':
+      if (!state.room || frame.room_id !== state.room.id) break;
+      // A jump in seq means something was missed in transit: ask for the gap.
+      if (frame.seq > lastSeq() + 1) requestSync();
+      accept(frame);
+      render();
+      break;
+    case 'sync': {
+      if (!state.room || frame.room_id !== state.room.id) break;
+      state.syncing = false;
+      frame.messages.forEach(accept);
+      if (frame.messages.length === 0) {
+        state.lastSeq.set(frame.room_id, Math.max(lastSeq(), frame.latest_seq));
+      } else if (frame.has_more) {
+        requestSync();
+      }
+      render();
+      break;
+    }
+    case 'ack':
+      state.pending.delete(frame.client_msg_id);
+      render();
+      break;
+    case 'error':
+      if (frame.client_msg_id && frame.code !== 'IN_PROGRESS') state.pending.delete(frame.client_msg_id);
+      note(`오류 ${frame.code}: ${frame.message}`);
+      render();
+      break;
+    case 'reconnect':
+      note('서버가 재접속을 요청했습니다');
+      state.ws.close();
+      break;
+  }
+}
+
+function lastSeq() { return state.lastSeq.get(state.room.id) || 0; }
+
+function accept(message) {
+  state.messages.set(message.seq, message);
+  if (message.seq > lastSeq()) state.lastSeq.set(message.room_id, message.seq);
+}
+
+function requestSync() {
+  if (state.syncing) return;
+  state.syncing = true;
+  send({ t: 'sync', room_id: state.room.id, after_seq: lastSeq(), limit: 200 });
+}
+
+// ---------------------------------------------------------------- UI
+async function openRoom(room) {
+  if (room.type === 'group' && !room.member) await api(`/rooms/${room.id}/join`, { method: 'POST' });
+  if (state.room) send({ t: 'leave', room_id: state.room.id });
+  state.room = room;
+  state.messages.clear();
+  state.lastSeq.delete(room.id);
+  state.syncing = false;
+  $('roomTitle').textContent = `${room.name} (${room.type === 'live' ? '라이브' : '그룹'})`;
+  $('composer').classList.remove('hidden');
+  $('messages').replaceChildren();
+  send({ t: 'join', room_id: room.id });
+  loadRooms();
+  $('body').focus();
+}
+
+function render() {
+  const box = $('messages');
+  const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
+  const notes = [...box.querySelectorAll('.note')];
+  box.replaceChildren();
+  const ordered = [...state.messages.values()].sort((a, b) => a.seq - b.seq);
+  for (const m of ordered) box.append(bubble(m.sender_name, m.body, `#${m.seq}`, m.sender_id === state.user.user_id, false));
+  for (const [, p] of state.pending) {
+    if (p.room_id === state.room.id) box.append(bubble(state.user.name, p.body, '보내는 중', true, true));
+  }
+  box.append(...notes.slice(-3));
+  if (atBottom) box.scrollTop = box.scrollHeight;
+}
+
+function bubble(name, body, info, mine, pending) {
+  const el = document.createElement('div');
+  el.className = 'msg' + (mine ? ' mine' : '') + (pending ? ' pending' : '');
+  const meta = document.createElement('div');
+  meta.className = 'meta';
+  meta.textContent = `${name} · ${info}`;
+  const text = document.createElement('div');
+  text.textContent = body;
+  el.append(meta, text);
+  return el;
+}
+
+function note(text) {
+  const el = document.createElement('div');
+  el.className = 'note';
+  el.textContent = text;
+  $('messages').append(el);
+  $('messages').scrollTop = $('messages').scrollHeight;
+}
+
+function setStatus(text) { $('status').textContent = text; }
+
+function showApp() {
+  $('login').classList.add('hidden');
+  $('app').classList.remove('hidden');
+  $('logout').classList.remove('hidden');
+  $('who').textContent = `${state.user.name} (#${state.user.user_id})`;
+  loadRooms().catch((e) => note(e.message));
+  connect();
+}
+
+function logout() {
+  sessionStorage.clear();
+  state.token = null;
+  if (state.ws) state.ws.close();
+  location.reload();
+}
+
+function newId() {
+  return crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+$('loginForm').onsubmit = async (event) => {
+  event.preventDefault();
+  try {
+    const data = await api('/login', { method: 'POST', body: { name: $('loginName').value } });
+    state.token = data.token;
+    state.user = { user_id: data.user_id, name: data.name };
+    sessionStorage.setItem('token', state.token);
+    sessionStorage.setItem('user', JSON.stringify(state.user));
+    showApp();
+  } catch (e) { alert(e.message); }
+};
+
+$('createForm').onsubmit = async (event) => {
+  event.preventDefault();
+  try {
+    const room = await api('/rooms', { method: 'POST', body: { name: $('roomName').value, type: $('roomType').value } });
+    $('roomName').value = '';
+    await openRoom(room);
+  } catch (e) { note(e.message); }
+};
+
+$('composer').onsubmit = (event) => {
+  event.preventDefault();
+  const body = $('body').value.trim();
+  if (!body || !state.room) return;
+  const id = newId();
+  state.pending.set(id, { room_id: state.room.id, body });
+  send({ t: 'send', room_id: state.room.id, client_msg_id: id, body });
+  $('body').value = '';
+  render();
+};
+
+$('refresh').onclick = () => loadRooms().catch((e) => note(e.message));
+$('logout').onclick = logout;
+
+if (state.token && state.user) showApp();
+</script>
+</body>
+</html>
