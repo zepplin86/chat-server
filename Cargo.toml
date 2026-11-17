@@ -1,0 +1,10 @@
+[package]
+name = "chat-server"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# 웹 서버.
+axum = "0.7"
+# 비동기 실행 환경.
+tokio = { version = "1", features = ["full"] }
