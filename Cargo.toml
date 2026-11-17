@@ -6,5 +6,8 @@ edition = "2021"
 [dependencies]
 # 웹 서버. "ws" 기능을 켜야 WebSocket 을 쓸 수 있다.
 axum = { version = "0.7", features = ["ws"] }
+# 주소 뒤의 값(?name=...)을 읽고, 메시지를 JSON 으로 만드는 데 쓴다.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 # 비동기 실행 환경.
 tokio = { version = "1", features = ["full"] }
