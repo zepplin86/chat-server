@@ -7,10 +7,53 @@
 <style>
   body { font: 15px/1.5 system-ui, sans-serif; max-width: 560px; margin: 24px auto; padding: 0 16px; }
   #status { color: #64748b; font-size: 13px; }
+  #messages { border: 1px solid #cbd5e1; border-radius: 8px; height: 360px; overflow-y: auto; padding: 10px; margin: 10px 0; }
+  form { display: flex; gap: 6px; }
+  input { flex: 1; font: inherit; padding: 6px 10px; }
+  button { font: inherit; padding: 6px 14px; }
 </style>
 </head>
 <body>
 <h1>채팅 1단계</h1>
-<div id="status">서버가 이 화면을 보내 주었다. 아직 대화 기능은 없다.</div>
+<div id="status">연결 안 됨</div>
+
+<div id="messages"></div>
+<form id="sendForm">
+  <input id="body" placeholder="메시지 입력" autocomplete="off" autofocus>
+  <button>보내기</button>
+</form>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+// 화면이 열리면 서버에 WebSocket 으로 접속한다.
+const ws = new WebSocket(`ws://${location.host}/ws`);
+
+ws.onopen = () => {
+  $('status').textContent = '연결됨';
+};
+
+// 서버가 메시지를 보내 줄 때마다 화면에 한 줄 추가한다.
+ws.onmessage = (event) => {
+  const row = document.createElement('div');
+  row.textContent = event.data;
+  $('messages').append(row);
+  $('messages').scrollTop = $('messages').scrollHeight;
+};
+
+// 연결이 끊기면 알려 준다. (1단계에는 자동 재접속이 없다)
+ws.onclose = () => {
+  $('status').textContent = '연결 끊김. 새로고침하면 다시 접속합니다';
+};
+
+// 보내기를 누르면 입력한 글을 서버로 보낸다.
+$('sendForm').onsubmit = (event) => {
+  event.preventDefault();
+  const body = $('body').value.trim();
+  if (!body || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(body);
+  $('body').value = '';
+};
+</script>
 </body>
 </html>

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-# 웹 서버.
-axum = "0.7"
+# 웹 서버. "ws" 기능을 켜야 WebSocket 을 쓸 수 있다.
+axum = { version = "0.7", features = ["ws"] }
 # 비동기 실행 환경.
 tokio = { version = "1", features = ["full"] }
