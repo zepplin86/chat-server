@@ -5,7 +5,7 @@ use argon2::password_hash::rand_core::OsRng;
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::Argon2;
 use axum::extract::State;
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -20,18 +20,43 @@ pub struct LoginRequest {
     password: String,
 }
 
-/// 로그인 결과. 성공하면 Ok, 실패하면 Err 이고 둘 다 (응답 번호, JSON) 이다.
-type LoginResult = Result<Json<Value>, (StatusCode, Json<Value>)>;
+/// 실패 응답. (응답 번호, JSON) 이다. 예: 401 {"error": "비밀번호가 틀렸습니다"}
+pub type ApiError = (StatusCode, Json<Value>);
 
-/// 실패 응답을 만든다. 예: 401 {"error": "비밀번호가 틀렸습니다"}
-fn fail(status: StatusCode, message: &str) -> (StatusCode, Json<Value>) {
+/// 요청 하나의 결과. 성공하면 Ok 에 JSON, 실패하면 Err 에 실패 응답이 담긴다.
+/// rooms.rs 도 같은 모양을 쓴다.
+pub type ApiResult = Result<Json<Value>, ApiError>;
+
+/// 실패 응답을 만든다.
+pub fn fail(status: StatusCode, message: &str) -> ApiError {
     (status, Json(json!({ "error": message })))
 }
 
 /// DB 나 해시 계산이 실패했을 때. 자세한 내용은 로그에만 남기고 화면에는 알리지 않는다.
-fn server_error(error: impl std::fmt::Display) -> (StatusCode, Json<Value>) {
-    println!("[로그인] 서버 오류: {error}");
+pub fn server_error(error: impl std::fmt::Display) -> ApiError {
+    println!("[서버 오류] {error}");
     fail(StatusCode::INTERNAL_SERVER_ERROR, "서버 오류")
+}
+
+/// 요청에 실린 입장권을 확인하고 그 주인의 이름을 돌려준다. 입장권이 없거나 가짜면 401.
+///
+/// 입장권은 요청의 머리말(header)에 이렇게 실려 온다:
+///   Authorization: Bearer 3f2b8c1e-...
+/// 머리말은 요청 본문 앞에 붙는 "이름: 값" 모양의 덧붙임 정보다.
+/// Bearer 는 "이것을 가진 사람"이라는 뜻으로, 입장권을 실을 때 쓰는 정해진 말머리다.
+pub async fn require_user(state: &AppState, headers: &HeaderMap) -> Result<String, ApiError> {
+    let token = headers
+        .get("authorization")
+        // 값이 글자로 읽히지 않으면 없는 것으로 친다.
+        .and_then(|value| value.to_str().ok())
+        // 앞의 "Bearer " 를 떼어 낸다. 그렇게 시작하지 않으면 없는 것으로 친다.
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .ok_or_else(|| fail(StatusCode::UNAUTHORIZED, "로그인이 필요합니다"))?;
+
+    db::find_session_name(&state.db, token)
+        .await
+        .map_err(server_error)?
+        .ok_or_else(|| fail(StatusCode::UNAUTHORIZED, "로그인이 필요합니다"))
 }
 
 /// "/login" 으로 요청이 오면 불린다.
@@ -41,7 +66,7 @@ pub async fn login(
     State(state): State<Arc<AppState>>,
     // 요청 본문의 JSON 을 LoginRequest 로 바꿔 받는다.
     Json(request): Json<LoginRequest>,
-) -> LoginResult {
+) -> ApiResult {
     let name = request.name.trim();
     // chars().count() 는 글자 수다. len() 은 바이트 수라서 한글은 한 글자가 3으로 세어진다.
     if name.is_empty() || name.chars().count() > 32 {
