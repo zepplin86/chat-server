@@ -10,6 +10,7 @@ use serde_json::json;
 use tokio::sync::broadcast;
 
 // crate 는 "이 프로젝트의 맨 위"라는 뜻이다. state.rs 에 있는 AppState 를 가져온다.
+use crate::db;
 use crate::state::AppState;
 
 /// 로그에서 연결을 구분하기 위한 번호표. 접속할 때마다 1씩 올라간다.
@@ -42,13 +43,25 @@ async fn chat(mut socket: WebSocket, state: Arc<AppState>, name: String) {
     // 이 연결의 번호표를 뽑는다. 로그에서 누구의 일인지 구분하는 데만 쓴다.
     let id = NEXT_CONN_ID.fetch_add(1, Ordering::Relaxed);
 
-    // 지금까지의 대화를 복사하고, 방송 채널 구독을 시작한다.
-    // 이 뒤로 누가 보낸 메시지든 rx 로 들어온다.
-    // 둘을 한 번의 잠금 안에서 해야 그 사이에 온 메시지를 놓치거나 두 번 받지 않는다.
-    // 잠금은 이 중괄호를 나가는 순간 풀린다.
-    let (past, mut rx) = {
-        let history = state.history.lock().unwrap();
-        (history.clone(), state.tx.subscribe())
+    // 방송 채널 구독을 먼저 시작한다. 이 뒤로 누가 보낸 메시지든 rx 로 들어온다.
+    let mut rx = state.tx.subscribe();
+
+    // 지금까지의 대화를 DB 에서 읽어 온다.
+    // 구독을 먼저 했으므로, 읽는 동안 새로 온 메시지도 놓치지 않는다.
+    // 대신 그 짧은 틈에 온 메시지는 DB 에서 한 번, 방송으로 한 번, 두 번 받을 수 있다.
+    // (지금은 그대로 둔다. 메시지에 순번을 붙이면 가려낼 수 있다.)
+    let past: Vec<String> = match db::load_messages(&state.db).await {
+        Ok(rows) => rows
+            .into_iter()
+            // 화면이 받는 모양인 JSON 한 줄로 바꾼다. 예: {"body":"안녕","name":"철수"}
+            .map(|(name, body)| json!({ "name": name, "body": body }).to_string())
+            .collect(),
+        Err(error) => {
+            // DB 에서 읽지 못했다. 대화를 보여 줄 수 없으니 이 연결을 끝낸다.
+            drop(rx);
+            println!("[연결 {id} {name}] 지난 대화를 읽지 못해 종료: {error}");
+            return;
+        }
     };
     println!(
         "[연결 {id} {name}] 접속 (지금 {}명), 지난 대화 {}개를 보냄",
@@ -77,18 +90,19 @@ async fn chat(mut socket: WebSocket, state: Arc<AppState>, name: String) {
                         if body.is_empty() {
                             continue;
                         }
+                        // 먼저 DB 에 저장한다. 저장이 끝날 때까지 여기서 기다린다.
+                        // 저장에 실패한 메시지는 뿌리지 않는다.
+                        // 뿌리고 나서 저장에 실패하면, 지금 본 사람과 나중에 온 사람이 다른 대화를 보게 된다.
+                        if let Err(error) = db::save_message(&state.db, &name, body).await {
+                            println!("[연결 {id} {name}] 저장 실패, 뿌리지 않음: {error}");
+                            continue;
+                        }
                         // 누가 보냈는지 붙여서 JSON 한 줄로 만든다.
                         // 예: {"body":"안녕","name":"철수"}
                         let line = json!({ "name": name, "body": body }).to_string();
-                        // 대화 기록에 추가하고, 방송 채널에 넣는다.
-                        // 방송은 구독 중인 모든 연결(본인 포함)이 받는다.
-                        // 잠금 안에서 함께 해야 기록 순서와 방송 순서가 같아진다.
+                        // 방송 채널에 넣는다. 구독 중인 모든 연결(본인 포함)이 받는다.
                         // send 는 그 순간 구독 중인 연결 수를 돌려준다.
-                        let listeners = {
-                            let mut history = state.history.lock().unwrap();
-                            history.push(line.clone());
-                            state.tx.send(line).unwrap_or(0)
-                        };
+                        let listeners = state.tx.send(line).unwrap_or(0);
                         println!("[연결 {id} {name}] 받음: {body:?} → {listeners}명에게 방송");
                     }
                     // 연결이 끊겼거나, 닫겠다고 알려왔거나, 오류가 났다: 끝낸다.

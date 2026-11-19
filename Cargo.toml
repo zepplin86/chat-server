@@ -9,5 +9,7 @@ axum = { version = "0.7", features = ["ws"] }
 # 주소 뒤의 값(?name=...)을 읽고, 메시지를 JSON 으로 만드는 데 쓴다.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# PostgreSQL 에 접속해 SQL 을 보내는 라이브러리.
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres"] }
 # 비동기 실행 환경.
 tokio = { version = "1", features = ["full"] }
