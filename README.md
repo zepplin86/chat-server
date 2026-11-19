@@ -8,7 +8,7 @@
 
 ## 지금 상태
 
-2단계(`feature/02-postgres`) 진행 중. 서버 한 대, 방 여러 개, 대화는 PostgreSQL 에 저장한다.
+2단계까지 끝났다 (`v0.2.0`). 서버 한 대, 방 여러 개, 대화는 PostgreSQL 에 저장한다.
 
 ```
 브라우저 ──WebSocket──▶ 채팅 서버 ──SQL──▶ PostgreSQL
