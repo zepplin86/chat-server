@@ -1,4 +1,4 @@
-//! 2단계: 서버 한 대, 방 여러 개, 대화는 PostgreSQL 에 저장.
+//! 3단계: 같은 서버를 여러 대 띄운다. 방 여러 개, 대화는 PostgreSQL 에 저장.
 //!
 //! 지금 하는 일은 다섯 가지다.
 //! 1. 브라우저가 접속하면 화면 한 장을 보여 준다.
@@ -34,6 +34,13 @@ use state::AppState;
 
 #[tokio::main]
 async fn main() {
+    // 이 서버가 쓸 포트를 정한다.
+    // 포트는 한 컴퓨터 안에서 프로그램을 구분하는 번호다. 한 포트는 한 프로그램만 쓸 수 있다.
+    // 같은 서버를 두 대 띄우려면 서로 다른 포트를 써야 하므로, 밖에서 정해 줄 수 있게 했다.
+    // PORT 환경 변수가 있으면 그 값을, 없으면 8081 을 쓴다. 예: PORT=8082 cargo run
+    // 8080 은 로드밸런서가 쓴다. 브라우저는 8080 으로 들어오고, 로드밸런서가 이 서버로 넘겨준다.
+    let port = std::env::var("PORT").unwrap_or_else(|_| "8081".to_string());
+
     // PostgreSQL 에 접속한다. DB 가 꺼져 있으면 서버를 시작하지 않는다.
     let db = db::connect()
         .await
@@ -42,7 +49,8 @@ async fn main() {
     // DB 연결과 방송 채널의 묶음을 만든다.
     // Arc 는 값 하나를 여러 곳에서 함께 가리키게 해 주는 포장지다.
     // 연결마다 이 묶음을 복제해 받지만, 복제되는 것은 가리키는 손잡이뿐이고 내용은 하나다.
-    let state = Arc::new(AppState::new(db));
+    // 포트 번호는 이 서버의 이름표로도 쓴다. 여러 대 중 어느 서버인지 화면에 알려 주기 위해서다.
+    let state = Arc::new(AppState::new(db, port.clone()));
 
     // 주소와 처리 함수를 연결한다.
     let app = Router::new()
@@ -60,10 +68,10 @@ async fn main() {
         // 모든 처리 함수가 같은 묶음(DB 연결 + 방송 채널)을 꺼내 쓸 수 있게 맡겨 둔다.
         .with_state(state);
 
-    // 8080 포트를 열고 접속을 받기 시작한다.
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:8080")
+    // 포트를 열고 접속을 받기 시작한다.
+    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}"))
         .await
-        .expect("8080 포트를 열 수 없습니다");
-    println!("http://localhost:8080 에서 접속을 기다리는 중");
+        .unwrap_or_else(|error| panic!("{port} 포트를 열 수 없습니다: {error}"));
+    println!("{port} 포트에서 접속을 기다리는 중 (브라우저는 로드밸런서 http://localhost:8080 으로)");
     axum::serve(listener, app).await.expect("서버 실행 실패");
 }
