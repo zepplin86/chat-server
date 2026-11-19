@@ -31,21 +31,21 @@ pub async fn connect() -> Result<PgPool, sqlx::Error> {
     Ok(db)
 }
 
-/// 메시지 하나를 저장한다.
-pub async fn save_message(db: &PgPool, name: &str, body: &str) -> Result<(), sqlx::Error> {
+/// 메시지 하나를 저장하고, DB 가 매긴 순번(id)을 돌려준다.
+pub async fn save_message(db: &PgPool, name: &str, body: &str) -> Result<i64, sqlx::Error> {
     // $1, $2 자리에 뒤의 bind 값이 순서대로 들어간다.
     // 글자를 직접 이어 붙이지 않는 이유: 사용자가 입력한 글자가 SQL 명령으로 실행되는 것을 막는다.
-    sqlx::query("INSERT INTO messages (name, body) VALUES ($1, $2)")
+    // RETURNING id 는 "방금 넣은 줄의 id 를 알려 달라"는 뜻이다.
+    sqlx::query_scalar("INSERT INTO messages (name, body) VALUES ($1, $2) RETURNING id")
         .bind(name)
         .bind(body)
-        .execute(db)
-        .await?;
-    Ok(())
+        .fetch_one(db)
+        .await
 }
 
-/// 지금까지의 메시지를 오래된 것부터 (이름, 내용) 으로 돌려준다.
-pub async fn load_messages(db: &PgPool) -> Result<Vec<(String, String)>, sqlx::Error> {
-    sqlx::query_as("SELECT name, body FROM messages ORDER BY id")
+/// 지금까지의 메시지를 순번이 작은 것부터 (순번, 이름, 내용) 으로 돌려준다.
+pub async fn load_messages(db: &PgPool) -> Result<Vec<(i64, String, String)>, sqlx::Error> {
+    sqlx::query_as("SELECT id, name, body FROM messages ORDER BY id")
         .fetch_all(db)
         .await
 }

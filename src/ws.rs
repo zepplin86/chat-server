@@ -38,6 +38,13 @@ pub async fn ws_handler(
     ws.on_upgrade(move |socket| chat(socket, state, query.name))
 }
 
+/// 메시지 하나를 화면이 받는 모양인 JSON 한 줄로 만든다.
+/// 예: {"body":"안녕","name":"철수","seq":7}
+/// seq 는 DB 가 매긴 순번이다. 화면은 이것으로 순서를 맞추고 중복을 가려낸다.
+fn to_line(seq: i64, name: &str, body: &str) -> String {
+    json!({ "seq": seq, "name": name, "body": body }).to_string()
+}
+
 /// 연결 하나를 처음부터 끝까지 담당한다.
 async fn chat(mut socket: WebSocket, state: Arc<AppState>, name: String) {
     // 이 연결의 번호표를 뽑는다. 로그에서 누구의 일인지 구분하는 데만 쓴다.
@@ -48,13 +55,12 @@ async fn chat(mut socket: WebSocket, state: Arc<AppState>, name: String) {
 
     // 지금까지의 대화를 DB 에서 읽어 온다.
     // 구독을 먼저 했으므로, 읽는 동안 새로 온 메시지도 놓치지 않는다.
-    // 대신 그 짧은 틈에 온 메시지는 DB 에서 한 번, 방송으로 한 번, 두 번 받을 수 있다.
-    // (지금은 그대로 둔다. 메시지에 순번을 붙이면 가려낼 수 있다.)
+    // 대신 그 짧은 틈에 온 메시지는 DB 에서 한 번, 방송으로 한 번, 두 번 보내게 된다.
+    // 메시지마다 순번이 붙어 있으므로, 화면이 같은 순번을 두 번 받으면 하나를 버린다.
     let past: Vec<String> = match db::load_messages(&state.db).await {
         Ok(rows) => rows
             .into_iter()
-            // 화면이 받는 모양인 JSON 한 줄로 바꾼다. 예: {"body":"안녕","name":"철수"}
-            .map(|(name, body)| json!({ "name": name, "body": body }).to_string())
+            .map(|(seq, name, body)| to_line(seq, &name, &body))
             .collect(),
         Err(error) => {
             // DB 에서 읽지 못했다. 대화를 보여 줄 수 없으니 이 연결을 끝낸다.
@@ -90,20 +96,22 @@ async fn chat(mut socket: WebSocket, state: Arc<AppState>, name: String) {
                         if body.is_empty() {
                             continue;
                         }
-                        // 먼저 DB 에 저장한다. 저장이 끝날 때까지 여기서 기다린다.
+                        // 먼저 DB 에 저장하고 순번을 받는다. 저장이 끝날 때까지 여기서 기다린다.
                         // 저장에 실패한 메시지는 뿌리지 않는다.
                         // 뿌리고 나서 저장에 실패하면, 지금 본 사람과 나중에 온 사람이 다른 대화를 보게 된다.
-                        if let Err(error) = db::save_message(&state.db, &name, body).await {
-                            println!("[연결 {id} {name}] 저장 실패, 뿌리지 않음: {error}");
-                            continue;
-                        }
-                        // 누가 보냈는지 붙여서 JSON 한 줄로 만든다.
-                        // 예: {"body":"안녕","name":"철수"}
-                        let line = json!({ "name": name, "body": body }).to_string();
+                        let seq = match db::save_message(&state.db, &name, body).await {
+                            Ok(seq) => seq,
+                            Err(error) => {
+                                println!("[연결 {id} {name}] 저장 실패, 뿌리지 않음: {error}");
+                                continue;
+                            }
+                        };
+                        // 순번과 보낸 사람을 붙여 JSON 한 줄로 만든다.
+                        let line = to_line(seq, &name, body);
                         // 방송 채널에 넣는다. 구독 중인 모든 연결(본인 포함)이 받는다.
                         // send 는 그 순간 구독 중인 연결 수를 돌려준다.
                         let listeners = state.tx.send(line).unwrap_or(0);
-                        println!("[연결 {id} {name}] 받음: {body:?} → {listeners}명에게 방송");
+                        println!("[연결 {id} {name}] 받음: {body:?} → 순번 {seq}, {listeners}명에게 방송");
                     }
                     // 연결이 끊겼거나, 닫겠다고 알려왔거나, 오류가 났다: 끝낸다.
                     Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
