@@ -1,4 +1,4 @@
-//! 2단계: 서버 한 대, 방 여러 개, 대화는 PostgreSQL 에 저장.
+//! 3단계: 같은 서버를 여러 대 띄운다. 방 여러 개, 대화는 PostgreSQL 에 저장.
 //!
 //! 지금 하는 일은 다섯 가지다.
 //! 1. 브라우저가 접속하면 화면 한 장을 보여 준다.
@@ -60,10 +60,14 @@ async fn main() {
         // 모든 처리 함수가 같은 묶음(DB 연결 + 방송 채널)을 꺼내 쓸 수 있게 맡겨 둔다.
         .with_state(state);
 
-    // 8080 포트를 열고 접속을 받기 시작한다.
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:8080")
+    // 포트를 열고 접속을 받기 시작한다.
+    // 포트는 한 컴퓨터 안에서 프로그램을 구분하는 번호다. 한 포트는 한 프로그램만 쓸 수 있다.
+    // 같은 서버를 두 대 띄우려면 서로 다른 포트를 써야 하므로, 밖에서 정해 줄 수 있게 했다.
+    // PORT 환경 변수가 있으면 그 값을, 없으면 8080 을 쓴다. 예: PORT=8081 cargo run
+    let port = std::env::var("PORT").unwrap_or_else(|_| "8080".to_string());
+    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}"))
         .await
-        .expect("8080 포트를 열 수 없습니다");
-    println!("http://localhost:8080 에서 접속을 기다리는 중");
+        .unwrap_or_else(|error| panic!("{port} 포트를 열 수 없습니다: {error}"));
+    println!("http://localhost:{port} 에서 접속을 기다리는 중");
     axum::serve(listener, app).await.expect("서버 실행 실패");
 }
