@@ -1,22 +1,24 @@
-//! 3단계: 같은 서버를 여러 대 띄운다. 방 여러 개, 대화는 PostgreSQL 에 저장.
+//! 4단계: 서버들 사이에서 NATS 가 메시지를 날라 준다. 서버 여러 대, 방 여러 개, 대화는 PostgreSQL 에 저장.
 //!
 //! 지금 하는 일은 다섯 가지다.
 //! 1. 브라우저가 접속하면 화면 한 장을 보여 준다.
 //! 2. 이름과 비밀번호로 로그인하면 입장권(token)을 준다.
 //! 3. 방 목록을 보여 주고, 새 방을 만든다.
 //! 4. 화면이 입장권과 방 번호를 들고 WebSocket 으로 연결해 오면, 그 방의 최근 대화를 DB 에서 읽어 먼저 보내 준다.
-//! 5. 누가 보낸 말이든 DB 에 저장하고, 보낸 사람 이름을 붙여 같은 방에 있는 모든 사람에게 뿌린다.
+//! 5. 누가 보낸 말이든 DB 에 저장하고, NATS 에 내보낸다. 모든 서버가 그것을 받아 같은 방에 있는 사람에게 뿌린다.
 //!
-//! 이 파일은 조립만 한다. 실제 일은 아래 다섯 파일에 있다.
+//! 이 파일은 조립만 한다. 실제 일은 아래 여섯 파일에 있다.
 //! - auth.rs: 로그인 (비밀번호 확인, 입장권 발급)
+//! - bus.rs: NATS 와 주고받는 일 (서버들 사이의 전달)
 //! - db.rs: PostgreSQL 과 주고받는 일 (접속, 저장, 읽기)
 //! - rooms.rs: 방 목록, 방 만들기, 이전 대화 더 보기
-//! - state.rs: 모든 연결이 함께 쓰는 것들 (DB 연결, 방송 채널)
+//! - state.rs: 모든 연결이 함께 쓰는 것들 (DB 연결, 방송 채널, NATS 연결)
 //! - ws.rs: WebSocket 연결 하나를 맺고 끝까지 담당하는 코드
 
-// mod 는 "같은 폴더의 auth.rs, db.rs, rooms.rs, state.rs, ws.rs 를 이 프로그램에 포함한다"는 선언이다.
+// mod 는 "같은 폴더의 auth.rs, bus.rs, db.rs, rooms.rs, state.rs, ws.rs 를 이 프로그램에 포함한다"는 선언이다.
 // 이 줄이 없으면 파일이 있어도 컴파일되지 않는다.
 mod auth;
+mod bus;
 mod db;
 mod rooms;
 mod state;
@@ -46,11 +48,20 @@ async fn main() {
         .await
         .expect("DB 에 접속할 수 없습니다. docker compose up -d 로 DB 를 먼저 켜세요");
 
-    // DB 연결과 방송 채널의 묶음을 만든다.
+    // NATS 에 접속한다. 서버들 사이에서 메시지를 날라 주는 프로그램이다. 이것도 꺼져 있으면 시작하지 않는다.
+    let nats = bus::connect()
+        .await
+        .expect("NATS 에 접속할 수 없습니다. docker compose up -d 로 NATS 를 먼저 켜세요");
+
+    // DB 연결, NATS 연결, 방송 채널의 묶음을 만든다.
     // Arc 는 값 하나를 여러 곳에서 함께 가리키게 해 주는 포장지다.
     // 연결마다 이 묶음을 복제해 받지만, 복제되는 것은 가리키는 손잡이뿐이고 내용은 하나다.
     // 포트 번호는 이 서버의 이름표로도 쓴다. 여러 대 중 어느 서버인지 화면에 알려 주기 위해서다.
-    let state = Arc::new(AppState::new(db, port.clone()));
+    let state = Arc::new(AppState::new(db, nats.clone(), port.clone()));
+
+    // NATS 에서 오는 메시지를 이 서버의 방송 채널로 옮기는 일을 뒤에서 따로 돌린다.
+    // spawn 은 "이 일을 따로 돌려 두고 나는 다음 줄로 간다"는 뜻이다.
+    tokio::spawn(bus::relay(nats, state.tx.clone()));
 
     // 주소와 처리 함수를 연결한다.
     let app = Router::new()
@@ -65,7 +76,7 @@ async fn main() {
         .route("/rooms/:id/messages", get(rooms::older_messages))
         // "/ws" 로 오면 WebSocket 연결을 맺는다.
         .route("/ws", get(ws::ws_handler))
-        // 모든 처리 함수가 같은 묶음(DB 연결 + 방송 채널)을 꺼내 쓸 수 있게 맡겨 둔다.
+        // 모든 처리 함수가 같은 묶음을 꺼내 쓸 수 있게 맡겨 둔다.
         .with_state(state);
 
     // 포트를 열고 접속을 받기 시작한다.
