@@ -8,19 +8,21 @@
 
 ## 지금 상태
 
-3단계(`v0.3.0`)까지 끝났다. 로드밸런서 뒤에 같은 서버를 여러 대 띄운다.
-다만 다른 서버에 붙은 사람끼리는 아직 실시간으로 대화가 안 된다. (이유: [docs/03-two-servers.md](docs/03-two-servers.md))
+4단계(`feature/04-nats`) 진행 중. 서버들 사이에서 NATS 가 메시지를 날라 준다.
+어느 서버에 붙었든 같은 방 사람끼리 실시간으로 대화가 된다. (사고 과정: [docs/04-nats.md](docs/04-nats.md))
 
 ```
                               ┌──▶ 서버 1 (8081) ─┐
-브라우저들 ──▶ 로드밸런서 ────┤                   ├──▶ PostgreSQL
-              (8080)          └──▶ 서버 2 (8082) ─┘
+브라우저들 ──▶ 로드밸런서 ────┤       ▲▼          ├──▶ PostgreSQL
+              (8080)          │      NATS         │
+                              │       ▲▼          │
+                              └──▶ 서버 2 (8082) ─┘
 ```
 
 ## 실행
 
 ```bash
-docker compose up -d   # PostgreSQL 과 로드밸런서 켜기 (처음 한 번)
+docker compose up -d   # PostgreSQL, 로드밸런서, NATS 켜기 (처음 한 번)
 cargo run              # 터미널 1: 채팅 서버 (8081)
 PORT=8082 cargo run    # 터미널 2: 채팅 서버 한 대 더 (8082)
 ```
