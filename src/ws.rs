@@ -80,7 +80,15 @@ async fn chat(mut socket: WebSocket, state: Arc<AppState>, name: String, room_id
     // 이 연결의 번호표를 뽑는다. 로그에서 누구의 일인지 구분하는 데만 쓴다.
     let id = NEXT_CONN_ID.fetch_add(1, Ordering::Relaxed);
 
-    // 방송 채널 구독을 먼저 시작한다. 이 뒤로 누가 보낸 메시지든 rx 로 들어온다.
+    // 맨 먼저 이 서버의 이름표를 알려 준다. 예: {"server":"8081"}
+    // 로드밸런서 뒤에 서버가 여러 대라서, 화면은 자기가 어느 서버에 붙었는지 알 길이 없다.
+    // 대화 메시지가 아니라 안내다. 화면은 server 라는 칸이 있으면 안내로 알아본다.
+    let hello = json!({ "server": state.server }).to_string();
+    if socket.send(Message::Text(hello)).await.is_err() {
+        return;
+    }
+
+    // 방송 채널 구독을 시작한다. 이 뒤로 누가 보낸 메시지든 rx 로 들어온다.
     let mut rx = state.tx.subscribe();
 
     // 이 방의 최근 대화를 DB 에서 읽어 온다. 전부가 아니라 가장 최근 몇 개만이다.

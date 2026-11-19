@@ -14,6 +14,18 @@ pub async fn connect() -> Result<PgPool, sqlx::Error> {
     // 연결을 최대 5개까지 맺어 두고 돌려 쓴다.
     let db = PgPoolOptions::new().max_connections(5).connect(&url).await?;
 
+    // 여기서부터는 표를 준비하는 일이다. 서버가 여러 대면 이 일을 동시에 하게 되는데,
+    // 그러면 서로 "아직 없네" 하고 같은 것을 둘 다 만들려다 한쪽이 실패한다.
+    // 그래서 한 번에 한 서버만 하도록 줄을 세운다.
+    //
+    // begin 은 "지금부터 하는 일을 한 묶음으로 친다"는 뜻이다(트랜잭션). commit 에서 묶음이 끝난다.
+    // pg_advisory_xact_lock 은 DB 가 빌려주는 잠금이다. 같은 번호(1)의 잠금은 한 번에 하나만 쥘 수 있고,
+    // 다른 서버는 먼저 쥔 서버가 묶음을 끝낼 때까지 이 줄에서 기다린다.
+    let mut setup = db.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(1)")
+        .execute(&mut *setup)
+        .await?;
+
     // 표(table)는 엑셀 시트 같은 것이다. 메시지 하나가 한 줄이 된다.
     // id 는 DB 가 1, 2, 3... 으로 알아서 매기는 번호다. 들어온 순서를 알 수 있다.
     // IF NOT EXISTS 덕분에 이미 있으면 아무 일도 하지 않는다.
@@ -25,7 +37,7 @@ pub async fn connect() -> Result<PgPool, sqlx::Error> {
             created_at TIMESTAMPTZ NOT NULL DEFAULT now()
         )",
     )
-    .execute(&db)
+    .execute(&mut *setup)
     .await?;
 
     // 계정. 이름은 겹칠 수 없다(UNIQUE).
@@ -38,7 +50,7 @@ pub async fn connect() -> Result<PgPool, sqlx::Error> {
             created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
         )",
     )
-    .execute(&db)
+    .execute(&mut *setup)
     .await?;
 
     // 입장권. 로그인에 성공하면 한 장 만들어 준다.
@@ -51,7 +63,7 @@ pub async fn connect() -> Result<PgPool, sqlx::Error> {
             created_at TIMESTAMPTZ NOT NULL DEFAULT now()
         )",
     )
-    .execute(&db)
+    .execute(&mut *setup)
     .await?;
 
     // 방. 이름은 겹칠 수 없다.
@@ -62,12 +74,12 @@ pub async fn connect() -> Result<PgPool, sqlx::Error> {
             created_at TIMESTAMPTZ NOT NULL DEFAULT now()
         )",
     )
-    .execute(&db)
+    .execute(&mut *setup)
     .await?;
 
     // 방이 하나도 없으면 첫 방을 만들어 둔다. 처음 만든 방이라 번호는 1 이다.
     sqlx::query("INSERT INTO rooms (name) SELECT '모두의 방' WHERE NOT EXISTS (SELECT 1 FROM rooms)")
-        .execute(&db)
+        .execute(&mut *setup)
         .await?;
 
     // 메시지가 어느 방의 것인지 적을 칸(room_id)을 messages 표에 덧붙인다.
@@ -78,8 +90,12 @@ pub async fn connect() -> Result<PgPool, sqlx::Error> {
         "ALTER TABLE messages
          ADD COLUMN IF NOT EXISTS room_id BIGINT NOT NULL DEFAULT 1 REFERENCES rooms (id)",
     )
-    .execute(&db)
+    .execute(&mut *setup)
     .await?;
+
+    // 준비가 끝났다. 묶음을 끝내면 잠금이 풀리고, 기다리던 다른 서버가 이어서 한다.
+    // 그 서버가 볼 때는 이미 다 만들어져 있으므로 아무 일도 하지 않고 지나간다.
+    setup.commit().await?;
 
     Ok(db)
 }
