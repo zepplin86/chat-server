@@ -10,7 +10,7 @@
 //! 이 파일은 조립만 한다. 실제 일은 아래 다섯 파일에 있다.
 //! - auth.rs: 로그인 (비밀번호 확인, 입장권 발급)
 //! - db.rs: PostgreSQL 과 주고받는 일 (접속, 저장, 읽기)
-//! - rooms.rs: 방 목록, 방 만들기
+//! - rooms.rs: 방 목록, 방 만들기, 이전 대화 더 보기
 //! - state.rs: 모든 연결이 함께 쓰는 것들 (DB 연결, 방송 채널)
 //! - ws.rs: WebSocket 연결 하나를 맺고 끝까지 담당하는 코드
 
@@ -53,6 +53,8 @@ async fn main() {
         .route("/login", post(auth::login))
         // "/rooms" 는 같은 주소에 두 가지 일을 건다. get 이면 방 목록, post 면 방 만들기.
         .route("/rooms", get(rooms::list).post(rooms::create))
+        // 방 하나의 지난 대화. :id 자리에는 방 번호가 온다. 예: /rooms/1/messages
+        .route("/rooms/:id/messages", get(rooms::older_messages))
         // "/ws" 로 오면 WebSocket 연결을 맺는다.
         .route("/ws", get(ws::ws_handler))
         // 모든 처리 함수가 같은 묶음(DB 연결 + 방송 채널)을 꺼내 쓸 수 있게 맡겨 둔다.

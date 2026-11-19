@@ -181,22 +181,39 @@ pub async fn save_message(
         .await
 }
 
-/// 방에 들어온 사람에게 보여 줄 지난 메시지의 수.
-/// 전부 보내면 메시지가 쌓일수록 들어오는 데 오래 걸린다. 가장 최근 것만 보낸다.
-const RECENT_MESSAGES: i64 = 50;
+/// 한 번에 보내 주는 지난 메시지의 수.
+/// 전부 보내면 메시지가 쌓일수록 들어오는 데 오래 걸린다. 한 묶음씩 끊어 보낸다.
+const PAGE_SIZE: i64 = 50;
 
-/// 그 방의 가장 최근 메시지 몇 개를 순번이 작은 것부터 (순번, 이름, 내용) 으로 돌려준다.
+/// 그 방의 가장 최근 메시지 한 묶음을 순번이 작은 것부터 (순번, 이름, 내용) 으로 돌려준다.
+/// 방에 들어올 때 쓴다.
 pub async fn load_recent_messages(
     db: &PgPool,
     room_id: i64,
 ) -> Result<Vec<(i64, String, String)>, sqlx::Error> {
-    // "최근 50개"를 고르려면 순번이 큰 것부터(DESC) 세어 50개에서 멈춰야(LIMIT) 한다.
+    // "가장 큰 수보다 앞의 것"은 곧 "가장 최근 것"이다. i64::MAX 는 i64 가 담을 수 있는 가장 큰 수.
+    load_messages_before(db, room_id, i64::MAX).await
+}
+
+/// 그 방에서 순번이 before 보다 작은 메시지 중 가장 가까운 한 묶음을,
+/// 순번이 작은 것부터 (순번, 이름, 내용) 으로 돌려준다. "이전 대화 더 보기"에 쓴다.
+///
+/// 예: before 가 151 이면 #101 ~ #150 을 돌려준다.
+pub async fn load_messages_before(
+    db: &PgPool,
+    room_id: i64,
+    before: i64,
+) -> Result<Vec<(i64, String, String)>, sqlx::Error> {
+    // before 바로 앞의 50개를 고르려면 순번이 큰 것부터(DESC) 세어 50개에서 멈춰야(LIMIT) 한다.
     // 작은 것부터 세면 가장 오래된 50개가 나온다.
     let mut rows: Vec<(i64, String, String)> = sqlx::query_as(
-        "SELECT id, name, body FROM messages WHERE room_id = $1 ORDER BY id DESC LIMIT $2",
+        "SELECT id, name, body FROM messages
+         WHERE room_id = $1 AND id < $2
+         ORDER BY id DESC LIMIT $3",
     )
     .bind(room_id)
-    .bind(RECENT_MESSAGES)
+    .bind(before)
+    .bind(PAGE_SIZE)
     .fetch_all(db)
     .await?;
 

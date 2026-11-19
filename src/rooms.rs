@@ -1,8 +1,8 @@
-//! 방: 목록을 보여 주고, 새로 만든다.
+//! 방: 목록을 보여 주고, 새로 만들고, 지난 대화를 한 묶음씩 내준다.
 //! 방에 들어가 대화하는 일은 ws.rs 가 한다. 여기는 방 자체만 다룬다.
 use std::sync::Arc;
 
-use axum::extract::State;
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
 use serde::Deserialize;
@@ -54,4 +54,37 @@ pub async fn create(
         // 409 는 "이미 있는 것과 부딪힌다"는 뜻의 HTTP 응답 번호다.
         None => Err(fail(StatusCode::CONFLICT, "같은 이름의 방이 이미 있습니다")),
     }
+}
+
+/// 지난 대화 요청의 주소 뒤에 붙는 값: /rooms/1/messages?before=151
+#[derive(Deserialize)]
+pub struct OlderQuery {
+    /// 화면이 가진 가장 오래된 메시지의 순번. 이것보다 앞의 것을 달라는 뜻이다.
+    before: i64,
+}
+
+/// "/rooms/방번호/messages?before=순번" 으로 get 요청이 오면 불린다.
+/// 그 방에서 순번이 before 보다 작은 메시지 한 묶음을 순번이 작은 것부터 돌려준다.
+/// 더 없으면 빈 목록([])을 돌려준다.
+///
+/// 지난 대화는 WebSocket 이 아니라 보통의 요청으로 받는다.
+/// "달라고 하면 준다"는 한 번 묻고 답하는 일이라, 열어 두는 통로가 필요 없기 때문이다.
+pub async fn older_messages(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    // 주소 중간의 방 번호를 꺼낸다. 예: /rooms/1/messages 의 1
+    Path(room_id): Path<i64>,
+    Query(query): Query<OlderQuery>,
+) -> ApiResult {
+    require_user(&state, &headers).await?;
+
+    let rows = db::load_messages_before(&state.db, room_id, query.before)
+        .await
+        .map_err(server_error)?;
+    // WebSocket 으로 보내는 메시지와 같은 모양으로 만든다. (ws.rs 의 to_line)
+    let messages: Vec<Value> = rows
+        .into_iter()
+        .map(|(seq, name, body)| json!({ "seq": seq, "name": name, "body": body }))
+        .collect();
+    Ok(Json(json!(messages)))
 }
