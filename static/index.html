@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>채팅 1단계</title>
+<style>
+  body { font: 15px/1.5 system-ui, sans-serif; max-width: 560px; margin: 24px auto; padding: 0 16px; }
+  #status { color: #64748b; font-size: 13px; }
+  #messages { border: 1px solid #cbd5e1; border-radius: 8px; height: 360px; overflow-y: auto; padding: 10px; margin: 10px 0; }
+  .who { font-weight: 600; }
+  form { display: flex; gap: 6px; }
+  input { flex: 1; font: inherit; padding: 6px 10px; }
+  button { font: inherit; padding: 6px 14px; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<h1>채팅 1단계</h1>
+<div id="status">연결 안 됨</div>
+
+<!-- 처음에는 이름을 묻는다 -->
+<form id="nameForm">
+  <input id="name" placeholder="이름" maxlength="32" required autofocus>
+  <button>들어가기</button>
+</form>
+
+<!-- 들어간 뒤에 보이는 대화 화면 -->
+<div id="chat" class="hidden">
+  <div id="messages"></div>
+  <form id="sendForm">
+    <input id="body" placeholder="메시지 입력" autocomplete="off">
+    <button>보내기</button>
+  </form>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let ws;
+
+// 이름을 입력하면 서버에 WebSocket 으로 접속한다. 이름은 주소 뒤에 붙여 보낸다.
+$('nameForm').onsubmit = (event) => {
+  event.preventDefault();
+  const name = $('name').value.trim();
+  if (!name) return;
+
+  ws = new WebSocket(`ws://${location.host}/ws?name=${encodeURIComponent(name)}`);
+
+  // 연결되면 대화 화면으로 바꾼다.
+  ws.onopen = () => {
+    $('status').textContent = `${name} (으)로 연결됨`;
+    $('nameForm').classList.add('hidden');
+    $('chat').classList.remove('hidden');
+    $('body').focus();
+  };
+
+  // 서버가 메시지를 보내 줄 때마다 화면에 한 줄 추가한다.
+  // 메시지는 {"name": 보낸 사람, "body": 내용} 모양의 JSON 이다.
+  ws.onmessage = (event) => {
+    const message = JSON.parse(event.data);
+    const row = document.createElement('div');
+    const who = document.createElement('span');
+    who.className = 'who';
+    who.textContent = message.name + ': ';
+    row.append(who, message.body);
+    $('messages').append(row);
+    $('messages').scrollTop = $('messages').scrollHeight;
+  };
+
+  // 연결이 끊기면 알려 준다. (1단계에는 자동 재접속이 없다)
+  ws.onclose = () => {
+    $('status').textContent = '연결 끊김. 새로고침하면 다시 접속합니다';
+  };
+};
+
+// 보내기를 누르면 입력한 글을 서버로 보낸다.
+$('sendForm').onsubmit = (event) => {
+  event.preventDefault();
+  const body = $('body').value.trim();
+  if (!body || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(body);
+  $('body').value = '';
+};
+</script>
+</body>
+</html>
