@@ -8,10 +8,13 @@
 
 ## 지금 상태
 
-2단계까지 끝났다 (`v0.2.0`). 서버 한 대, 방 여러 개, 대화는 PostgreSQL 에 저장한다.
+3단계(`feature/03-two-servers`) 진행 중. 같은 서버를 여러 대 띄울 수 있다.
+다만 다른 서버에 붙은 사람끼리는 아직 실시간으로 대화가 안 된다. (이유: [docs/03-two-servers.md](docs/03-two-servers.md))
 
 ```
-브라우저 ──WebSocket──▶ 채팅 서버 ──SQL──▶ PostgreSQL
+브라우저 A ──▶ 서버 1 ─┐
+                       ├──▶ PostgreSQL
+브라우저 B ──▶ 서버 2 ─┘
 ```
 
 ## 실행
@@ -25,3 +28,10 @@ cargo run              # 채팅 서버 켜기
 처음 쓰는 이름이면 그 비밀번호로 계정이 만들어진다.
 
 서버를 껐다(Ctrl+C) 다시 켜도 지난 대화가 남아 있다.
+
+서버를 두 대 띄우려면 터미널 두 개에서 포트를 다르게 준다.
+
+```bash
+PORT=8080 cargo run   # 터미널 1 → http://localhost:8080
+PORT=8081 cargo run   # 터미널 2 → http://localhost:8081
+```
