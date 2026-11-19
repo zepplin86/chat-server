@@ -9,6 +9,7 @@
   #status { color: #64748b; font-size: 13px; }
   #messages { border: 1px solid #cbd5e1; border-radius: 8px; height: 360px; overflow-y: auto; padding: 10px; margin: 10px 0; }
   .who { font-weight: 600; }
+  .seq { color: #999; font-size: 12px; }
   form { display: flex; gap: 6px; }
   input { flex: 1; font: inherit; padding: 6px 10px; }
   button { font: inherit; padding: 6px 14px; }
@@ -16,7 +17,7 @@
 </style>
 </head>
 <body>
-<h1>채팅 1단계</h1>
+<h1>채팅 2단계</h1>
 <div id="status">연결 안 됨</div>
 
 <!-- 처음에는 이름을 묻는다 -->
@@ -55,19 +56,33 @@ $('nameForm').onsubmit = (event) => {
   };
 
   // 서버가 메시지를 보내 줄 때마다 화면에 한 줄 추가한다.
-  // 메시지는 {"name": 보낸 사람, "body": 내용} 모양의 JSON 이다.
+  // 메시지는 {"seq": 순번, "name": 보낸 사람, "body": 내용} 모양의 JSON 이다.
+  // 순번은 DB 가 매긴 번호다. 서버가 보내 준 순서가 아니라 이 번호를 믿는다.
   ws.onmessage = (event) => {
     const message = JSON.parse(event.data);
+
+    // 같은 순번을 이미 그렸으면 버린다. (접속하는 순간에는 같은 메시지가 두 번 올 수 있다)
+    if ($('m' + message.seq)) return;
+
     const row = document.createElement('div');
+    row.id = 'm' + message.seq;
+    row.dataset.seq = message.seq;
+    const seq = document.createElement('span');
+    seq.className = 'seq';
+    seq.textContent = '#' + message.seq + ' ';
     const who = document.createElement('span');
     who.className = 'who';
     who.textContent = message.name + ': ';
-    row.append(who, message.body);
-    $('messages').append(row);
+    row.append(seq, who, message.body);
+
+    // 순번이 더 큰 줄이 이미 있으면 그 앞에 끼워 넣는다. 없으면 맨 아래에 붙인다.
+    // (두 사람이 동시에 보내면 순번이 큰 쪽이 먼저 도착할 수 있다)
+    const later = [...$('messages').children].find((other) => Number(other.dataset.seq) > message.seq);
+    $('messages').insertBefore(row, later ?? null);
     $('messages').scrollTop = $('messages').scrollHeight;
   };
 
-  // 연결이 끊기면 알려 준다. (1단계에는 자동 재접속이 없다)
+  // 연결이 끊기면 알려 준다. (아직 자동 재접속이 없다)
   ws.onclose = () => {
     $('status').textContent = '연결 끊김. 새로고침하면 다시 접속합니다';
   };
