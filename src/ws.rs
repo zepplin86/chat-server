@@ -4,7 +4,8 @@ use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
-use axum::response::Response;
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::broadcast;
@@ -17,25 +18,40 @@ use crate::state::AppState;
 /// 여러 연결이 동시에 건드려도 번호가 겹치지 않는 숫자 타입(Atomic)을 쓴다.
 static NEXT_CONN_ID: AtomicU64 = AtomicU64::new(1);
 
-/// 접속 주소 뒤에 붙는 값: /ws?name=철수
-/// Deserialize 를 붙이면 "name=철수" 같은 글자를 이 구조로 바꿔 넣어 준다.
+/// 접속 주소 뒤에 붙는 값: /ws?token=3f2b8c1e-...
+/// Deserialize 를 붙이면 "token=..." 같은 글자를 이 구조로 바꿔 넣어 준다.
 /// pub 이 붙은 ws_handler 가 인자로 받으므로 이것도 pub 이어야 한다.
+///
+/// 이름을 직접 받지 않는다. 이름을 받으면 남의 이름을 적어 보낼 수 있기 때문이다.
+/// 로그인해서 받은 입장권(token)만 받고, 이름은 서버가 DB 에서 찾는다.
 #[derive(Deserialize)]
 pub struct WsQuery {
-    name: String,
+    token: String,
 }
 
 /// 접속 요청이 오면 불린다. 일반 HTTP 연결을 WebSocket 으로 바꾼다.
 /// main.rs 가 주소에 연결해야 하므로 pub 이다. 이 파일에서 밖으로 내놓는 함수는 이것 하나다.
 pub async fn ws_handler(
     ws: WebSocketUpgrade,
-    // 주소 뒤의 ?name=... 을 꺼낸다. name 이 없으면 axum 이 400 오류로 거절한다.
+    // 주소 뒤의 ?token=... 을 꺼낸다. token 이 없으면 axum 이 400 오류로 거절한다.
     Query(query): Query<WsQuery>,
     // main.rs 에서 맡겨 둔 묶음을 꺼낸다.
     State(state): State<Arc<AppState>>,
 ) -> Response {
+    // 입장권의 주인이 누구인지 DB 에서 찾는다.
+    // WebSocket 으로 바꾸기 전에 확인하므로, 입장권이 없는 사람은 연결조차 맺지 못한다.
+    let name = match db::find_session_name(&state.db, &query.token).await {
+        Ok(Some(name)) => name,
+        // 그런 입장권이 없다. 401 은 "누구인지 확인되지 않았다"는 뜻의 HTTP 응답 번호다.
+        Ok(None) => return (StatusCode::UNAUTHORIZED, "로그인이 필요합니다").into_response(),
+        Err(error) => {
+            println!("[접속 거절] 입장권을 확인하지 못함: {error}");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "서버 오류").into_response();
+        }
+    };
+
     // 전환이 끝나면 chat 함수가 이 연결을 맡는다.
-    ws.on_upgrade(move |socket| chat(socket, state, query.name))
+    ws.on_upgrade(move |socket| chat(socket, state, name))
 }
 
 /// 메시지 하나를 화면이 받는 모양인 JSON 한 줄로 만든다.
