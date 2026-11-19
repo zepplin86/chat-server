@@ -4,6 +4,7 @@
 
 - 진행 원칙과 단계 계획, git 작업 방식: [CLAUDE.md](CLAUDE.md)
 - 완성형 참고 구현: `result` 브랜치 (`git switch result`)
+- 단계별 사고 과정 (왜 그렇게 했고, 무엇을 일부러 하지 않았는지): [docs/](docs/)
 
 ## 지금 상태
 
