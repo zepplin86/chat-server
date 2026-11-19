@@ -83,11 +83,11 @@ async fn chat(mut socket: WebSocket, state: Arc<AppState>, name: String, room_id
     // 방송 채널 구독을 먼저 시작한다. 이 뒤로 누가 보낸 메시지든 rx 로 들어온다.
     let mut rx = state.tx.subscribe();
 
-    // 지금까지의 대화를 DB 에서 읽어 온다.
+    // 이 방의 최근 대화를 DB 에서 읽어 온다. 전부가 아니라 가장 최근 몇 개만이다.
     // 구독을 먼저 했으므로, 읽는 동안 새로 온 메시지도 놓치지 않는다.
     // 대신 그 짧은 틈에 온 메시지는 DB 에서 한 번, 방송으로 한 번, 두 번 보내게 된다.
     // 메시지마다 순번이 붙어 있으므로, 화면이 같은 순번을 두 번 받으면 하나를 버린다.
-    let past: Vec<String> = match db::load_messages(&state.db, room_id).await {
+    let past: Vec<String> = match db::load_recent_messages(&state.db, room_id).await {
         Ok(rows) => rows
             .into_iter()
             .map(|(seq, name, body)| to_line(seq, &name, &body))

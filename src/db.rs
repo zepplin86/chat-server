@@ -181,13 +181,26 @@ pub async fn save_message(
         .await
 }
 
-/// 그 방의 지금까지의 메시지를 순번이 작은 것부터 (순번, 이름, 내용) 으로 돌려준다.
-pub async fn load_messages(
+/// 방에 들어온 사람에게 보여 줄 지난 메시지의 수.
+/// 전부 보내면 메시지가 쌓일수록 들어오는 데 오래 걸린다. 가장 최근 것만 보낸다.
+const RECENT_MESSAGES: i64 = 50;
+
+/// 그 방의 가장 최근 메시지 몇 개를 순번이 작은 것부터 (순번, 이름, 내용) 으로 돌려준다.
+pub async fn load_recent_messages(
     db: &PgPool,
     room_id: i64,
 ) -> Result<Vec<(i64, String, String)>, sqlx::Error> {
-    sqlx::query_as("SELECT id, name, body FROM messages WHERE room_id = $1 ORDER BY id")
-        .bind(room_id)
-        .fetch_all(db)
-        .await
+    // "최근 50개"를 고르려면 순번이 큰 것부터(DESC) 세어 50개에서 멈춰야(LIMIT) 한다.
+    // 작은 것부터 세면 가장 오래된 50개가 나온다.
+    let mut rows: Vec<(i64, String, String)> = sqlx::query_as(
+        "SELECT id, name, body FROM messages WHERE room_id = $1 ORDER BY id DESC LIMIT $2",
+    )
+    .bind(room_id)
+    .bind(RECENT_MESSAGES)
+    .fetch_all(db)
+    .await?;
+
+    // 그렇게 받은 것은 최신이 맨 앞이다. 화면에는 오래된 것부터 보여야 하므로 뒤집는다.
+    rows.reverse();
+    Ok(rows)
 }
