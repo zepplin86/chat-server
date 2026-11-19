@@ -7,4 +7,19 @@
 
 ## 지금 상태
 
-아직 코드가 없다. 1단계(`feature/01-single-server`)부터 시작한다.
+2단계(`feature/02-postgres`) 진행 중. 서버 한 대, 방 하나, 대화는 PostgreSQL 에 저장한다.
+
+```
+브라우저 ──WebSocket──▶ 채팅 서버 ──SQL──▶ PostgreSQL
+```
+
+## 실행
+
+```bash
+docker compose up -d   # PostgreSQL 켜기 (처음 한 번)
+cargo run              # 채팅 서버 켜기
+```
+
+브라우저 두 개로 http://localhost:8080 을 열고 이름을 넣으면 대화할 수 있다.
+
+서버를 껐다(Ctrl+C) 다시 켜도 지난 대화가 남아 있다.
