@@ -1,27 +1,28 @@
 //! 모든 연결이 함께 쓰는 것들.
-use std::sync::Mutex;
-
+use sqlx::PgPool;
 use tokio::sync::broadcast;
 
-/// 모든 연결이 함께 쓰는 것들. 서버의 메모리에만 있으므로 서버를 끄면 사라진다.
+/// 모든 연결이 함께 쓰는 것들.
 /// pub 을 붙여야 다른 파일(main.rs, ws.rs)에서 쓸 수 있다. 안 붙이면 이 파일 안에서만 보인다.
 pub struct AppState {
-    /// 지금까지의 대화. 늦게 들어온 사람에게 보여 주기 위해 모아 둔다.
-    /// 여러 연결이 동시에 건드리므로 한 번에 하나만 들어갈 수 있게 잠금(Mutex)으로 감싼다.
-    pub history: Mutex<Vec<String>>,
+    /// PostgreSQL 로 가는 연결 묶음(pool). 대화는 이제 서버 메모리가 아니라 DB 에 쌓인다.
+    /// 그래서 서버를 껐다 켜도 대화가 남는다.
+    /// DB 연결은 맺는 데 시간이 걸려서, 몇 개를 미리 맺어 두고 돌려 쓴다.
+    pub db: PgPool,
     /// 방송 채널의 보내는 쪽 손잡이. 여기에 메시지를 넣으면 구독 중인 모든 연결이 받는다.
-    pub tx: broadcast::Sender<String>,
+    /// 이것은 여전히 메모리에만 있다. 지금 접속해 있는 사람에게 전달하는 용도라 저장할 필요가 없다.
+    ///
+    /// 채널은 서버 전체에 하나뿐이고, 모든 방의 메시지가 여기로 지나간다.
+    /// 그래서 (방 번호, 메시지) 를 한 쌍으로 넣는다. 받는 쪽은 자기 방 것만 골라 전달한다.
+    pub tx: broadcast::Sender<(i64, String)>,
 }
 
 impl AppState {
-    /// 대화 기록이 비어 있는 새 묶음을 만든다.
-    pub fn new() -> Self {
+    /// DB 연결 묶음을 받아 새 묶음을 만든다.
+    pub fn new(db: PgPool) -> Self {
         // 방송 채널을 만든다. 256 은 느린 연결을 위해 쌓아 둘 수 있는 메시지 수.
         // tx 는 보내는 쪽 손잡이다. 받는 쪽은 연결마다 따로 만들 것이라 여기서는 버린다.
-        let (tx, _) = broadcast::channel::<String>(256);
-        Self {
-            history: Mutex::new(Vec::new()),
-            tx,
-        }
+        let (tx, _) = broadcast::channel::<(i64, String)>(256);
+        Self { db, tx }
     }
 }
