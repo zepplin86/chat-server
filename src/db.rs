@@ -1,4 +1,6 @@
 //! PostgreSQL 과 주고받는 일. SQL 은 전부 이 파일에만 있다.
+//!
+//! 채팅 서버는 읽을 때(로그인, 방, 지난 대화), 저장 담당은 메시지를 넣을 때 쓴다.
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 
@@ -27,7 +29,8 @@ pub async fn connect() -> Result<PgPool, sqlx::Error> {
         .await?;
 
     // 표(table)는 엑셀 시트 같은 것이다. 메시지 하나가 한 줄이 된다.
-    // id 는 DB 가 1, 2, 3... 으로 알아서 매기는 번호다. 들어온 순서를 알 수 있다.
+    // id 는 메시지의 순번이다. 들어온 순서를 알 수 있다.
+    // (5단계까지는 DB 가 1, 2, 3... 으로 매겼다. 6단계부터는 채팅 서버가 매겨서 넣는다)
     // IF NOT EXISTS 덕분에 이미 있으면 아무 일도 하지 않는다.
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS messages (
@@ -179,22 +182,32 @@ pub async fn find_session_name(db: &PgPool, token: &str) -> Result<Option<String
     .await
 }
 
-/// 메시지 하나를 저장하고, DB 가 매긴 순번(id)을 돌려준다.
+/// 메시지 하나를 저장한다. 순번(id)은 DB 가 매기지 않고 받은 것을 그대로 쓴다. (채팅 서버가 매겼다)
+/// 새로 넣었으면 true, 같은 순번이 이미 있어서 넣지 않았으면 false 를 돌려준다.
 pub async fn save_message(
     db: &PgPool,
+    seq: i64,
     room_id: i64,
     name: &str,
     body: &str,
-) -> Result<i64, sqlx::Error> {
-    // $1, $2, $3 자리에 뒤의 bind 값이 순서대로 들어간다.
+) -> Result<bool, sqlx::Error> {
+    // $1, $2... 자리에 뒤의 bind 값이 순서대로 들어간다.
     // 글자를 직접 이어 붙이지 않는 이유: 사용자가 입력한 글자가 SQL 명령으로 실행되는 것을 막는다.
-    // RETURNING id 는 "방금 넣은 줄의 id 를 알려 달라"는 뜻이다.
-    sqlx::query_scalar("INSERT INTO messages (room_id, name, body) VALUES ($1, $2, $3) RETURNING id")
-        .bind(room_id)
-        .bind(name)
-        .bind(body)
-        .fetch_one(db)
-        .await
+    //
+    // ON CONFLICT (id) DO NOTHING 은 "같은 id 가 이미 있으면 아무것도 하지 않는다"는 뜻이다.
+    // 저장 담당은 같은 메시지를 두 번 읽을 수 있다. 두 번 넣어도 한 줄만 남게 한다.
+    let result = sqlx::query(
+        "INSERT INTO messages (id, room_id, name, body) VALUES ($1, $2, $3, $4)
+         ON CONFLICT (id) DO NOTHING",
+    )
+    .bind(seq)
+    .bind(room_id)
+    .bind(name)
+    .bind(body)
+    .execute(db)
+    .await?;
+    // rows_affected 는 이 명령으로 바뀐 줄의 수다. 넣었으면 1, 이미 있어서 안 넣었으면 0.
+    Ok(result.rows_affected() == 1)
 }
 
 /// 한 번에 보내 주는 지난 메시지의 수.

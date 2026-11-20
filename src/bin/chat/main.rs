@@ -1,7 +1,10 @@
-//! 채팅 서버: 로직 담당. 로그인, 방, 저장을 맡는다. 브라우저 연결(WebSocket)은 붙들지 않는다.
+//! 채팅 서버: 로직 담당. 로그인, 방, 순번을 맡는다. 브라우저 연결(WebSocket)은 붙들지 않는다.
 //!
-//! 5단계에서 서버 한 대가 하던 일을 둘로 나눴다. 이쪽은 "무엇이 옳은지 정하는 일"이다.
-//! 누가 누구인지, 그런 방이 있는지, 메시지에 몇 번을 매길지. 그래서 DB 를 아는 것은 이 프로그램뿐이다.
+//! "무엇이 옳은지 정하는 일"을 한다. 누가 누구인지, 그런 방이 있는지, 메시지에 몇 번을 매길지.
+//!
+//! 6단계부터 메시지를 DB 에 직접 넣지 않는다. Kafka 에 적어 두고 바로 게이트웨이들에게 알린다.
+//! DB 에 넣는 일은 저장 담당(src/bin/persist)이 Kafka 를 읽어서 따로 한다.
+//! DB 는 읽을 때만 쓴다: 로그인, 방, 지난 대화.
 //!
 //! 문을 두 개 연다.
 //! - HTTP (8090): 브라우저가 로드밸런서를 거쳐 직접 부른다. 로그인, 방 목록, 방 만들기, 이전 대화 더 보기.
@@ -9,16 +12,17 @@
 //!
 //! 이 파일은 조립만 한다. 실제 일은 아래 파일에 있다.
 //! - auth.rs: 로그인 (비밀번호 확인, 입장권 발급)
-//! - db.rs: PostgreSQL 과 주고받는 일 (접속, 저장, 읽기)
 //! - grpc.rs: 게이트웨이가 부르는 일 (입장, 말하기)
 //! - rooms.rs: 방 목록, 방 만들기, 이전 대화 더 보기
-//! - state.rs: 모든 요청이 함께 쓰는 것들 (DB 연결, NATS 연결)
+//! - seq.rs: 순번 매기기
+//! - state.rs: 모든 요청이 함께 쓰는 것들 (DB 연결, NATS 연결, Kafka 손잡이, 순번)
+//! 다른 프로그램과 함께 쓰는 것(DB, NATS, Kafka, gRPC 약속)은 src/lib.rs 에 있다.
 
-// mod 는 "같은 폴더의 auth.rs, db.rs, ... 를 이 프로그램에 포함한다"는 선언이다.
+// mod 는 "같은 폴더의 auth.rs, grpc.rs, ... 를 이 프로그램에 포함한다"는 선언이다.
 mod auth;
-mod db;
 mod grpc;
 mod rooms;
+mod seq;
 mod state;
 
 use std::sync::Arc;
@@ -27,9 +31,10 @@ use axum::routing::{get, post};
 use axum::Router;
 
 // chat_server 는 이 프로젝트의 src/lib.rs 다. 게이트웨이와 함께 쓰는 것들이 들어 있다.
-use chat_server::bus;
 use chat_server::proto::chat_server::ChatServer;
+use chat_server::{bus, db, kafka};
 
+use seq::SeqMaker;
 use state::AppState;
 
 #[tokio::main]
@@ -48,8 +53,15 @@ async fn main() {
         .await
         .expect("NATS 에 접속할 수 없습니다. docker compose up -d 로 NATS 를 먼저 켜세요");
 
-    // DB 연결과 NATS 연결의 묶음. HTTP 쪽과 gRPC 쪽이 같은 묶음을 함께 쓴다.
-    let state = Arc::new(AppState { db, nats });
+    // Kafka 에 토픽이 있는지 확인하고(없으면 만들고), 적는 손잡이를 만든다.
+    // 메시지를 남기는 길이다. 이것도 꺼져 있으면 시작하지 않는다.
+    kafka::ensure_topic()
+        .await
+        .expect("Kafka 에 접속할 수 없습니다. docker compose up -d 로 Kafka 를 먼저 켜세요");
+    let kafka = kafka::writer().expect("Kafka 에 적을 준비를 하지 못했습니다");
+
+    // 함께 쓰는 것들의 묶음. HTTP 쪽과 gRPC 쪽이 같은 묶음을 쓴다.
+    let state = Arc::new(AppState { db, nats, kafka, seq: SeqMaker::new() });
 
     // HTTP 문: 주소와 처리 함수를 연결한다.
     let app = Router::new()
