@@ -17,6 +17,9 @@ async-nats = "0.53"
 futures-util = "0.3"
 # 약속 파일(proto)에 적은 메시지를 바이트로 바꾸고 되돌리는 라이브러리. gRPC 가 속에서 쓴다.
 prost = "0.14"
+# Kafka 에 접속해 기록을 적고 읽는 라이브러리. C 로 된 원본(librdkafka)을 함께 빌드한다.
+# 그래서 처음 빌드가 몇 분 걸리고, cmake 가 깔려 있어야 한다. (없으면: brew install cmake)
+rdkafka = { version = "0.36", features = ["cmake-build"] }
 # PostgreSQL 에 접속해 SQL 을 보내는 라이브러리.
 sqlx = { version = "0.8", features = ["runtime-tokio", "postgres"] }
 # 비동기 실행 환경.

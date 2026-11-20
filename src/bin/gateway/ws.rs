@@ -127,12 +127,12 @@ async fn chat(
                         if body.is_empty() {
                             continue;
                         }
-                        // 채팅 서버에 말하기를 부탁한다. 저장하고 NATS 에 내보내는 일은 채팅 서버가 한다.
+                        // 채팅 서버에 말하기를 부탁한다. 순번을 매기고, 남기고, NATS 에 내보내는 일은 채팅 서버가 한다.
                         // 여기서 방송 채널에 직접 넣지 않는다. 채팅 서버가 내보낸 것이 NATS 를 거쳐 방송 채널로 돌아온다.
                         let request = SayRequest { room_id, name: name.clone(), body: body.to_string() };
                         match state.chat.clone().say(request).await {
                             Ok(reply) => println!("[연결 {id} {name}] 받음: {body:?} → 채팅 서버가 순번 {} 을 매김", reply.into_inner().seq),
-                            // 채팅 서버가 꺼져 있거나 저장에 실패했다. 이 메시지는 어디에도 남지 않는다.
+                            // 채팅 서버가 꺼져 있거나 메시지를 남기지 못했다. 이 메시지는 어디에도 남지 않는다.
                             // 연결은 끊지 않는다. 채팅 서버가 돌아오면 다음 메시지부터 다시 된다.
                             Err(status) => println!("[연결 {id} {name}] 보내지 못함: {body:?} ({status})"),
                         }

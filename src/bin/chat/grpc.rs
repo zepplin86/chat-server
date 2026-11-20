@@ -8,14 +8,15 @@ use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
 use chat_server::bus;
+use chat_server::db;
+use chat_server::kafka::{self, Record};
 use chat_server::proto::chat_server::Chat;
 use chat_server::proto::{ChatMessage, JoinReply, JoinRequest, SayReply, SayRequest};
 use chat_server::to_line;
 
-use crate::db;
 use crate::state::AppState;
 
-/// gRPC 요청을 처리하는 쪽. DB 와 NATS 를 쓰므로 묶음을 들고 있는다.
+/// gRPC 요청을 처리하는 쪽. DB, NATS, Kafka 를 쓰므로 묶음을 들고 있는다.
 pub struct ChatService {
     pub state: Arc<AppState>,
 }
@@ -51,6 +52,7 @@ impl Chat for ChatService {
             .ok_or_else(|| Status::not_found("그런 방이 없습니다"))?;
 
         // 이 방의 최근 대화를 읽는다. 전부가 아니라 가장 최근 몇 개만이다.
+        // 방금 한 말이 아직 DB 에 안 들어갔을 수 있다. 저장 담당이 넣기 전이면 여기에 없다.
         let recent: Vec<ChatMessage> = db::load_recent_messages(db, request.room_id)
             .await
             .map_err(db_error)?
@@ -71,20 +73,28 @@ impl Chat for ChatService {
         let request = request.into_inner();
         let (room_id, name, body) = (request.room_id, request.name, request.body);
 
-        // 먼저 DB 에 저장하고 순번을 받는다. 저장에 실패한 메시지는 내보내지 않는다.
-        // 내보내고 나서 저장에 실패하면, 지금 본 사람과 나중에 온 사람이 다른 대화를 보게 된다.
-        let seq = db::save_message(&self.state.db, room_id, &name, &body)
-            .await
-            .map_err(db_error)?;
+        // 순번을 직접 매긴다. DB 에 넣고 받아 오던 것을 이제 기다리지 않는다. (seq.rs)
+        let seq = self.state.seq.next();
+
+        // Kafka 에 적는다. DB 에 넣는 일은 저장 담당이 이것을 읽어서 따로 한다.
+        // 여기서 DB 를 기다리지 않으므로, DB 가 느리거나 꺼져 있어도 말하기는 늦어지지 않는다.
+        // 적지 못한 메시지는 내보내지 않는다. 내보내고 나서 남기지 못하면,
+        // 지금 본 사람과 나중에 온 사람이 다른 대화를 보게 된다.
+        let record = Record { seq, room_id, name, body };
+        kafka::append(&self.state.kafka, &record).await.map_err(|error| {
+            println!("[말하기] {}: Kafka 에 적지 못해 내보내지 않음: {error}", record.name);
+            Status::unavailable("메시지를 남기지 못했습니다")
+        })?;
+        let Record { name, body, .. } = record;
 
         // 순번과 보낸 사람을 붙여 JSON 한 줄로 만들어 NATS 에 내보낸다.
         // 모든 게이트웨이가 받아 자기에게 붙은 사람들에게 뿌린다. 말한 본인도 이 길로 자기 말을 받는다.
         match bus::publish(&self.state.nats, room_id, to_line(seq, &name, &body)).await {
             // 성공은 "NATS 로 가는 줄에 세웠다"는 뜻이다. 게이트웨이에 도착했다는 뜻이 아니다.
-            Ok(()) => println!("[말하기] {name}: {body:?} → 순번 {seq}, NATS 에 내보냄"),
-            // 저장은 됐는데 내보내지 못했다. 지금 접속한 사람은 못 보고, 다시 들어오면 DB 에서 읽어 본다.
-            // 저장은 끝났으므로 게이트웨이에는 성공으로 답한다.
-            Err(error) => println!("[말하기] {name}: 순번 {seq} 저장은 했으나 NATS 에 내보내지 못함: {error}"),
+            Ok(()) => println!("[말하기] {name}: {body:?} → 순번 {seq}, Kafka 에 적고 NATS 에 내보냄"),
+            // 적기는 했는데 내보내지 못했다. 지금 접속한 사람은 못 보고, 다시 들어오면 DB 에서 읽어 본다.
+            // 남기는 일은 끝났으므로 게이트웨이에는 성공으로 답한다.
+            Err(error) => println!("[말하기] {name}: 순번 {seq} 적기는 했으나 NATS 에 내보내지 못함: {error}"),
         }
         Ok(Response::new(SayReply { seq }))
     }
