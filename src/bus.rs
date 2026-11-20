@@ -3,8 +3,10 @@
 //! NATS 는 메시지를 날라 주는 프로그램이다. 누가 "주제"를 정해 메시지를 내보내면(publish),
 //! 그 주제를 듣겠다고 한(subscribe) 모두에게 전해 준다. 저장하지 않고 그 자리에서 전하기만 한다.
 //!
-//! 서버 안의 방송 채널과 하는 일이 같다. 다른 점은 프로세스 밖에 있다는 것이다.
-//! 방송 채널은 한 서버 안의 연결들을 잇고, NATS 는 서버와 서버를 잇는다.
+//! 게이트웨이 안의 방송 채널과 하는 일이 같다. 다른 점은 프로세스 밖에 있다는 것이다.
+//! 방송 채널은 한 게이트웨이 안의 연결들을 잇고, NATS 는 프로그램과 프로그램을 잇는다.
+//!
+//! 내보내는 쪽은 채팅 서버(publish), 받는 쪽은 게이트웨이(relay)다.
 use async_nats::Client;
 use futures_util::StreamExt;
 use tokio::sync::broadcast;
@@ -19,17 +21,17 @@ pub async fn connect() -> Result<Client, async_nats::ConnectError> {
     async_nats::connect(url).await
 }
 
-/// 메시지 하나를 NATS 에 내보낸다. 주제는 "room.방번호" 다. 예: room.1
+/// 메시지 하나를 NATS 에 내보낸다. 채팅 서버가 저장을 마친 뒤 부른다. 주제는 "room.방번호" 다. 예: room.1
 pub async fn publish(nats: &Client, room_id: i64, line: String) -> Result<(), async_nats::Error> {
     nats.publish(format!("room.{room_id}"), line.into()).await?;
     Ok(())
 }
 
-/// NATS 에서 오는 메시지를 받아 이 서버의 방송 채널에 넣는 일을 끝없이 한다.
-/// 서버를 시작할 때 한 번 불러, 뒤에서 따로 돌게 둔다.
+/// NATS 에서 오는 메시지를 받아 이 게이트웨이의 방송 채널에 넣는 일을 끝없이 한다.
+/// 게이트웨이를 시작할 때 한 번 불러, 뒤에서 따로 돌게 둔다.
 ///
-/// 어느 서버가 내보낸 것이든 여기로 온다. 이 서버가 내보낸 것도 돌아온다.
-/// 그래서 연결들은 방송 채널만 듣고 있으면 모든 서버의 메시지를 받는다.
+/// 누가 어느 게이트웨이에 붙어서 한 말이든 채팅 서버가 내보내고, 그것이 여기로 온다.
+/// 그래서 연결들은 방송 채널만 듣고 있으면 모든 메시지를 받는다.
 pub async fn relay(nats: Client, tx: broadcast::Sender<(i64, String)>) {
     // "room.*" 은 room. 뒤에 무엇이 오든 다 듣겠다는 뜻이다. 모든 방의 메시지가 온다.
     let mut incoming = match nats.subscribe("room.*").await {
@@ -53,7 +55,7 @@ pub async fn relay(nats: Client, tx: broadcast::Sender<(i64, String)>) {
         let Ok(line) = String::from_utf8(message.payload.to_vec()) else {
             continue;
         };
-        // 이 서버의 방송 채널에 넣는다. 이 서버에 붙은 연결들이 받는다.
+        // 이 게이트웨이의 방송 채널에 넣는다. 이 게이트웨이에 붙은 연결들이 받는다.
         // 듣는 연결이 하나도 없으면 send 가 실패하는데, 그래도 괜찮으니 결과는 버린다.
         let _ = tx.send((room_id, line));
     }
