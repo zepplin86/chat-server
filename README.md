@@ -8,7 +8,7 @@
 
 ## 지금 상태
 
-6단계(`feature/06-kafka`) 진행 중. 메시지를 DB 에 넣는 일을 Kafka 뒤로 뺐다.
+6단계(`v0.6.0`)까지 끝났다. 메시지를 DB 에 넣는 일을 Kafka 뒤로 뺐다.
 채팅 서버는 Kafka 에 적어 두고 바로 전달한다. 저장 담당이 Kafka 를 읽어 PostgreSQL 에 넣는다.
 DB 가 느려지거나 멈춰도 대화는 멈추지 않는다. (사고 과정: [docs/06-kafka.md](docs/06-kafka.md))
 
