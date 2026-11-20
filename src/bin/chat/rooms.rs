@@ -1,5 +1,5 @@
 //! 방: 목록을 보여 주고, 새로 만들고, 지난 대화를 한 묶음씩 내준다.
-//! 방에 들어가 대화하는 일은 ws.rs 가 한다. 여기는 방 자체만 다룬다.
+//! 방에 들어가 대화하는 일은 게이트웨이가 한다. 여기는 방 자체만 다룬다.
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
@@ -81,7 +81,7 @@ pub async fn older_messages(
     let rows = db::load_messages_before(&state.db, room_id, query.before)
         .await
         .map_err(server_error)?;
-    // WebSocket 으로 보내는 메시지와 같은 모양으로 만든다. (ws.rs 의 to_line)
+    // WebSocket 으로 보내는 메시지와 같은 모양으로 만든다. (src/lib.rs 의 to_line)
     let messages: Vec<Value> = rows
         .into_iter()
         .map(|(seq, name, body)| json!({ "seq": seq, "name": name, "body": body }))
