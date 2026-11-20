@@ -1,4 +1,4 @@
-# 우리 프로그램 둘레에 필요한 것들: PostgreSQL, 로드밸런서, NATS, Kafka.
+# 우리 프로그램 둘레에 필요한 것들: PostgreSQL, ScyllaDB, 로드밸런서, NATS, Kafka.
 # 게이트웨이, 채팅 서버, 저장 담당은 cargo run 으로 돌린다.
 #
 #   docker compose up -d     켜기
@@ -58,6 +58,25 @@ services:
       # 기록을 컨테이너 밖에 둔다. 그래야 컨테이너를 껐다 켜도 기록이 남는다.
       - kafkadata:/var/lib/kafka/data
 
+  # ScyllaDB. 메시지를 넣어 두는 저장소다. 많이 쓰고 많이 쌓는 데 맞춰 만들어진 DB 다.
+  # 메시지는 여기에, 계정·입장권·방은 PostgreSQL 에 둔다.
+  # 켜지는 데 1분쯤 걸린다. 다 켜지기 전에는 우리 프로그램이 접속하지 못한다.
+  scylla:
+    image: scylladb/scylla:6.2
+    # 내 컴퓨터에서 가볍게 돌리기 위한 설정이다. CPU 1개, 메모리 750MB 만 쓰게 한다.
+    # (원래는 컴퓨터 한 대를 통째로 쓰려고 드는 프로그램이다. 실제 서비스에서는 이렇게 돌리지 않는다)
+    #
+    # 맨 끝의 --broadcast-rpc-address 는 접속한 프로그램에게 "앞으로는 이 주소로 오라"고 알려 주는 주소다.
+    # 이것이 없으면 컨테이너 안에서만 통하는 주소를 알려 줘서, 컨테이너 밖의 우리 프로그램이 찾아가지 못한다.
+    # (Kafka 의 KAFKA_ADVERTISED_LISTENERS 와 같은 이유다)
+    command: ["--smp", "1", "--memory", "750M", "--overprovisioned", "1", "--developer-mode", "1", "--broadcast-rpc-address", "127.0.0.1"]
+    ports:
+      # 채팅 서버와 저장 담당이 접속하는 포트.
+      - "127.0.0.1:9042:9042"
+    volumes:
+      # 데이터를 컨테이너 밖에 둔다. 그래야 컨테이너를 껐다 켜도 데이터가 남는다.
+      - scylladata:/var/lib/scylla
+
   postgres:
     image: postgres:16
     environment:
@@ -77,3 +96,4 @@ services:
 volumes:
   pgdata:
   kafkadata:
+  scylladata:
