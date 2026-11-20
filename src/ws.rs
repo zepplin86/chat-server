@@ -11,6 +11,7 @@ use serde_json::json;
 use tokio::sync::broadcast;
 
 // crate 는 "이 프로젝트의 맨 위"라는 뜻이다. state.rs 에 있는 AppState 를 가져온다.
+use crate::bus;
 use crate::db;
 use crate::state::AppState;
 
@@ -89,6 +90,7 @@ async fn chat(mut socket: WebSocket, state: Arc<AppState>, name: String, room_id
     }
 
     // 방송 채널 구독을 시작한다. 이 뒤로 누가 보낸 메시지든 rx 로 들어온다.
+    // 다른 서버에 붙은 사람이 보낸 것도 NATS 를 거쳐 이 채널로 들어온다.
     let mut rx = state.tx.subscribe();
 
     // 이 방의 최근 대화를 DB 에서 읽어 온다. 전부가 아니라 가장 최근 몇 개만이다.
@@ -146,11 +148,14 @@ async fn chat(mut socket: WebSocket, state: Arc<AppState>, name: String, room_id
                         };
                         // 순번과 보낸 사람을 붙여 JSON 한 줄로 만든다.
                         let line = to_line(seq, &name, body);
-                        // 방 번호와 함께 방송 채널에 넣는다. 구독 중인 모든 연결(본인 포함)이 받는다.
-                        // send 는 그 순간 구독 중인 연결 수를 돌려준다.
-                        let listeners = state.tx.send((room_id, line)).unwrap_or(0);
-                        // listeners 는 서버 전체의 연결 수다. 그중 같은 방에 있는 연결만 실제로 전달한다.
-                        println!("[연결 {id} {name}] 받음: {body:?} → 순번 {seq}, 방송 채널에 넣음 (서버 전체 {listeners}명)");
+                        // NATS 에 내보낸다. 모든 서버(이 서버 포함)가 받아 자기 방송 채널에 넣는다. (bus.rs 의 relay)
+                        // 이 서버의 방송 채널에 직접 넣지 않는다. 넣으면 NATS 로 돌아온 것과 합쳐 두 번 가게 된다.
+                        match bus::publish(&state.nats, room_id, line).await {
+                            // 성공은 "NATS 로 가는 줄에 세웠다"는 뜻이다. 다른 서버에 도착했다는 뜻이 아니다.
+                            Ok(()) => println!("[연결 {id} {name}] 받음: {body:?} → 순번 {seq}, NATS 에 내보냄"),
+                            // 저장은 됐는데 내보내지 못했다. 지금 접속한 사람은 못 보고, 다시 들어오면 DB 에서 읽어 본다.
+                            Err(error) => println!("[연결 {id} {name}] 순번 {seq} 저장은 했으나 NATS 에 내보내지 못함: {error}"),
+                        }
                     }
                     // 연결이 끊겼거나, 닫겠다고 알려왔거나, 오류가 났다: 끝낸다.
                     Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
@@ -158,7 +163,7 @@ async fn chat(mut socket: WebSocket, state: Arc<AppState>, name: String, room_id
                     Some(Ok(_)) => {}
                 }
             }
-            // (2) 누군가(본인 포함) 보낸 메시지가 방송 채널로 왔다.
+            // (2) 누군가(본인 포함, 다른 서버 사람 포함) 보낸 메시지가 방송 채널로 왔다.
             outgoing = rx.recv() => {
                 match outgoing {
                     // 이 사람에게 전달한다. 전달에 실패하면 연결이 끊긴 것이다.

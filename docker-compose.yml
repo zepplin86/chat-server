@@ -1,4 +1,4 @@
-# 채팅 서버 둘레에 필요한 것들: PostgreSQL 과 로드밸런서.
+# 채팅 서버 둘레에 필요한 것들: PostgreSQL, 로드밸런서, NATS.
 # 채팅 서버 자체는 여전히 cargo run 으로 돌린다.
 #
 #   docker compose up -d     켜기
@@ -17,6 +17,14 @@ services:
       # 컨테이너 안에서 host.docker.internal 이라는 이름으로 내 컴퓨터를 찾을 수 있게 한다.
       # (Mac 에서는 없어도 되지만 Linux 에서는 이 줄이 있어야 한다)
       - "host.docker.internal:host-gateway"
+
+  # NATS. 채팅 서버들 사이에서 메시지를 날라 준다.
+  # 한 서버가 여기에 메시지를 내보내면, 듣고 있는 모든 서버가 받는다.
+  nats:
+    image: nats:2.10-alpine
+    ports:
+      # 채팅 서버가 접속하는 포트.
+      - "127.0.0.1:4222:4222"
 
   postgres:
     image: postgres:16

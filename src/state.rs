@@ -1,4 +1,5 @@
 //! 모든 연결이 함께 쓰는 것들.
+use async_nats::Client;
 use sqlx::PgPool;
 use tokio::sync::broadcast;
 
@@ -15,17 +16,20 @@ pub struct AppState {
     /// 채널은 서버 전체에 하나뿐이고, 모든 방의 메시지가 여기로 지나간다.
     /// 그래서 (방 번호, 메시지) 를 한 쌍으로 넣는다. 받는 쪽은 자기 방 것만 골라 전달한다.
     pub tx: broadcast::Sender<(i64, String)>,
+    /// NATS 로 가는 연결. 받은 메시지를 여기로 내보내면 모든 서버가 받는다.
+    /// 방송 채널은 이 서버 안에서만 통한다. 서버 밖으로 나가는 길이 이것이다.
+    pub nats: Client,
     /// 이 서버의 이름표. 포트 번호를 쓴다. 예: "8081"
     /// 서버가 여러 대일 때, 지금 붙은 서버가 어느 것인지 화면에 알려 주는 데만 쓴다.
     pub server: String,
 }
 
 impl AppState {
-    /// DB 연결 묶음과 서버 이름표를 받아 새 묶음을 만든다.
-    pub fn new(db: PgPool, server: String) -> Self {
+    /// DB 연결 묶음, NATS 연결, 서버 이름표를 받아 새 묶음을 만든다.
+    pub fn new(db: PgPool, nats: Client, server: String) -> Self {
         // 방송 채널을 만든다. 256 은 느린 연결을 위해 쌓아 둘 수 있는 메시지 수.
         // tx 는 보내는 쪽 손잡이다. 받는 쪽은 연결마다 따로 만들 것이라 여기서는 버린다.
         let (tx, _) = broadcast::channel::<(i64, String)>(256);
-        Self { db, tx, server }
+        Self { db, tx, nats, server }
     }
 }
