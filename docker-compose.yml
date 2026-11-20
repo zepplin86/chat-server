@@ -1,5 +1,5 @@
-# 게이트웨이와 채팅 서버 둘레에 필요한 것들: PostgreSQL, 로드밸런서, NATS.
-# 게이트웨이와 채팅 서버 자체는 cargo run 으로 돌린다.
+# 우리 프로그램 둘레에 필요한 것들: PostgreSQL, 로드밸런서, NATS, Kafka.
+# 게이트웨이, 채팅 서버, 저장 담당은 cargo run 으로 돌린다.
 #
 #   docker compose up -d     켜기
 #   docker compose down      끄기 (데이터는 남는다)
@@ -27,6 +27,37 @@ services:
       # 게이트웨이와 채팅 서버가 접속하는 포트.
       - "127.0.0.1:4222:4222"
 
+  # Kafka. 메시지를 받은 순서대로 디스크에 적어 두는 기록 통로다.
+  # NATS 는 전하고 잊지만, Kafka 는 적어 두고 남긴다. 읽는 쪽이 늦게 와도 처음부터 읽을 수 있다.
+  # 채팅 서버가 여기에 메시지를 적고, 저장 담당이 읽어서 PostgreSQL 에 넣는다.
+  kafka:
+    image: apache/kafka:3.9.0
+    ports:
+      # 채팅 서버와 저장 담당이 접속하는 포트.
+      - "127.0.0.1:9092:9092"
+    environment:
+      # 아래는 Kafka 를 한 대만 혼자 돌리기 위한 설정이다. 원래는 여러 대가 무리를 지어 도는 프로그램이라
+      # "나는 1번이고, 무리는 나 하나뿐이다"를 일일이 알려 줘야 한다. 값의 뜻을 다 알 필요는 없다.
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      # 접속한 프로그램에게 "앞으로는 이 주소로 오라"고 알려 주는 주소다.
+      # 우리 프로그램은 컨테이너 밖(내 컴퓨터)에서 도므로 localhost 로 알려 준다.
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      # 한 대뿐이라 복사본을 1개만 둔다. (기본값은 3개라서 한 대로는 시작하지 못한다)
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # 기록을 적어 둘 폴더.
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+    volumes:
+      # 기록을 컨테이너 밖에 둔다. 그래야 컨테이너를 껐다 켜도 기록이 남는다.
+      - kafkadata:/var/lib/kafka/data
+
   postgres:
     image: postgres:16
     environment:
@@ -45,3 +76,4 @@ services:
 
 volumes:
   pgdata:
+  kafkadata:

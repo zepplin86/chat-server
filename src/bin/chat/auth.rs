@@ -10,7 +10,7 @@ use axum::Json;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::db;
+use chat_server::db;
 use crate::state::AppState;
 
 /// 화면이 보내오는 로그인 요청. 예: {"name": "철수", "password": "1234"}

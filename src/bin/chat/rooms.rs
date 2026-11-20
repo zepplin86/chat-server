@@ -9,7 +9,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::auth::{fail, require_user, server_error, ApiResult};
-use crate::db;
+use chat_server::db;
 use crate::state::AppState;
 
 /// 화면이 보내오는 방 만들기 요청. 예: {"name": "점심 메뉴"}

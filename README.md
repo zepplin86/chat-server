@@ -8,34 +8,36 @@
 
 ## 지금 상태
 
-5단계(`v0.5.0`)까지 끝났다. 서버 한 대가 하던 일을 두 프로그램으로 나눴다.
-게이트웨이는 브라우저 연결을 붙들고, 채팅 서버는 로그인·방·저장을 맡는다. 둘 사이는 gRPC 로 부른다.
-채팅 서버를 껐다 켜도 붙어 있던 사람은 끊기지 않는다. (사고 과정: [docs/05-split-gateway.md](docs/05-split-gateway.md))
+6단계(`v0.6.0`)까지 끝났다. 메시지를 DB 에 넣는 일을 Kafka 뒤로 뺐다.
+채팅 서버는 Kafka 에 적어 두고 바로 전달한다. 저장 담당이 Kafka 를 읽어 PostgreSQL 에 넣는다.
+DB 가 느려지거나 멈춰도 대화는 멈추지 않는다. (사고 과정: [docs/06-kafka.md](docs/06-kafka.md))
 
 ```
-                              ┌──▶ 게이트웨이 1 (8081) ──┐
-              화면, /ws       │           ▲              │ gRPC
-브라우저들 ──▶ 로드밸런서 ────┤          NATS ◀──────────┼──────── 채팅 서버 ──▶ PostgreSQL
-              (8080)          │           ▼              │        (8090, 50051)
-                   │          └──▶ 게이트웨이 2 (8082) ──┘              ▲
-                   └──────────────── /login, /rooms ────────────────────┘
+                              ┌──▶ 게이트웨이 1 ──┐
+              화면, /ws       │        ▲          │ gRPC
+브라우저들 ──▶ 로드밸런서 ────┤       NATS ◀──────┼────── 채팅 서버 ──읽기──▶ PostgreSQL
+              (8080)          │        ▼          │           │                  ▲
+                   │          └──▶ 게이트웨이 2 ──┘           │ 적기             │ 넣기
+                   │                                          ▼                  │
+                   │                                        Kafka ──읽기──▶ 저장 담당
+                   └────────── /login, /rooms ──▶ 채팅 서버
 ```
 
 ## 실행
 
-protoc 가 필요하다. 없으면 `brew install protobuf` 로 깐다. (gRPC 약속 파일을 코드로 바꾸는 프로그램)
+protoc 와 cmake 가 필요하다. 없으면 `brew install protobuf cmake` 로 깐다.
+(protoc 는 gRPC 약속 파일을 코드로 바꾸고, cmake 는 Kafka 라이브러리를 빌드한다. 처음 빌드는 몇 분 걸린다)
 
 ```bash
-docker compose up -d                   # PostgreSQL, 로드밸런서, NATS 켜기 (처음 한 번)
+docker compose up -d                   # PostgreSQL, 로드밸런서, NATS, Kafka 켜기 (처음 한 번)
 cargo run --bin chat                   # 터미널 1: 채팅 서버 (HTTP 8090, gRPC 50051)
-cargo run --bin gateway                # 터미널 2: 게이트웨이 (8081)
-PORT=8082 cargo run --bin gateway      # 터미널 3: 게이트웨이 한 대 더 (8082)
+cargo run --bin persist                # 터미널 2: 저장 담당
+cargo run --bin gateway                # 터미널 3: 게이트웨이 (8081)
+PORT=8082 cargo run --bin gateway      # 터미널 4: 게이트웨이 한 대 더 (8082)
 ```
-
-로드밸런서 설정이 바뀌었다. 전 단계에서 켜 둔 것이 있으면 `docker compose restart lb` 로 다시 읽힌다.
 
 브라우저로 http://localhost:8080 을 열고 이름과 비밀번호를 넣고 방을 고르면 대화할 수 있다.
 처음 쓰는 이름이면 그 비밀번호로 계정이 만들어진다.
 
 게이트웨이는 한 대만 띄워도 된다. 로드밸런서가 켜져 있는 쪽으로 보낸다.
-채팅 서버를 껐다(Ctrl+C) 다시 켜도 지난 대화가 남아 있고, 붙어 있던 사람도 끊기지 않는다.
+저장 담당을 꺼 둬도 대화는 된다. 다만 그동안 한 말은 DB 에 안 들어가고, 다시 켜면 밀린 것이 들어간다.
