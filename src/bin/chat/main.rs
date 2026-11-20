@@ -2,9 +2,12 @@
 //!
 //! "무엇이 옳은지 정하는 일"을 한다. 누가 누구인지, 그런 방이 있는지, 메시지에 몇 번을 매길지.
 //!
-//! 6단계부터 메시지를 DB 에 직접 넣지 않는다. Kafka 에 적어 두고 바로 게이트웨이들에게 알린다.
-//! DB 에 넣는 일은 저장 담당(src/bin/persist)이 Kafka 를 읽어서 따로 한다.
-//! DB 는 읽을 때만 쓴다: 로그인, 방, 지난 대화.
+//! 메시지를 저장소에 직접 넣지 않는다. Kafka 에 적어 두고 바로 게이트웨이들에게 알린다.
+//! 넣는 일은 저장 담당(src/bin/persist)이 Kafka 를 읽어서 따로 한다.
+//!
+//! 저장소가 둘이다.
+//! - PostgreSQL: 계정, 입장권, 방. (가끔 바뀌고, 서로 엮여 있는 것들)
+//! - ScyllaDB: 메시지. 여기서는 지난 대화를 읽기만 한다. (끝없이 쌓이는 것)
 //!
 //! 문을 두 개 연다.
 //! - HTTP (8090): 브라우저가 로드밸런서를 거쳐 직접 부른다. 로그인, 방 목록, 방 만들기, 이전 대화 더 보기.
@@ -15,8 +18,8 @@
 //! - grpc.rs: 게이트웨이가 부르는 일 (입장, 말하기)
 //! - rooms.rs: 방 목록, 방 만들기, 이전 대화 더 보기
 //! - seq.rs: 순번 매기기
-//! - state.rs: 모든 요청이 함께 쓰는 것들 (DB 연결, NATS 연결, Kafka 손잡이, 순번)
-//! 다른 프로그램과 함께 쓰는 것(DB, NATS, Kafka, gRPC 약속)은 src/lib.rs 에 있다.
+//! - state.rs: 모든 요청이 함께 쓰는 것들 (DB 연결 둘, NATS 연결, Kafka 손잡이, 순번)
+//! 다른 프로그램과 함께 쓰는 것(PostgreSQL, ScyllaDB, NATS, Kafka, gRPC 약속)은 src/lib.rs 에 있다.
 
 // mod 는 "같은 폴더의 auth.rs, grpc.rs, ... 를 이 프로그램에 포함한다"는 선언이다.
 mod auth;
@@ -32,6 +35,7 @@ use axum::Router;
 
 // chat_server 는 이 프로젝트의 src/lib.rs 다. 게이트웨이와 함께 쓰는 것들이 들어 있다.
 use chat_server::proto::chat_server::ChatServer;
+use chat_server::store::Store;
 use chat_server::{bus, db, kafka};
 
 use seq::SeqMaker;
@@ -48,6 +52,11 @@ async fn main() {
         .await
         .expect("DB 에 접속할 수 없습니다. docker compose up -d 로 DB 를 먼저 켜세요");
 
+    // ScyllaDB 에 접속한다. 지난 대화를 읽는 곳이다. 이것도 꺼져 있으면 시작하지 않는다.
+    let store = Store::connect()
+        .await
+        .expect("ScyllaDB 에 접속할 수 없습니다. docker compose up -d 로 먼저 켜세요 (켜지는 데 1분쯤 걸립니다)");
+
     // NATS 에 접속한다. 저장한 메시지를 게이트웨이들에게 알리는 길이다. 이것도 꺼져 있으면 시작하지 않는다.
     let nats = bus::connect()
         .await
@@ -61,7 +70,7 @@ async fn main() {
     let kafka = kafka::writer().expect("Kafka 에 적을 준비를 하지 못했습니다");
 
     // 함께 쓰는 것들의 묶음. HTTP 쪽과 gRPC 쪽이 같은 묶음을 쓴다.
-    let state = Arc::new(AppState { db, nats, kafka, seq: SeqMaker::new() });
+    let state = Arc::new(AppState { db, store, nats, kafka, seq: SeqMaker::new() });
 
     // HTTP 문: 주소와 처리 함수를 연결한다.
     let app = Router::new()

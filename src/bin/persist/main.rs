@@ -1,8 +1,9 @@
-//! 저장 담당: Kafka 에 적힌 메시지를 읽어 PostgreSQL 에 넣는다. 하는 일은 이것 하나다.
+//! 저장 담당: Kafka 에 적힌 메시지를 읽어 ScyllaDB 에 넣는다. 하는 일은 이것 하나다.
 //!
-//! 6단계에서 채팅 서버가 하던 "메시지를 DB 에 넣는 일"을 떼어 냈다.
-//! 채팅 서버는 Kafka 에 적어 두기만 하고 바로 다음 일을 한다. 여기서 그것을 읽어 천천히 넣는다.
-//! DB 가 느려지면 이 프로그램만 밀린다. 채팅은 밀리지 않는다.
+//! 채팅 서버는 Kafka 에 적어 두기만 하고 바로 다음 일을 한다. 여기서 그것을 읽어 저장소에 넣는다.
+//! 저장소가 느려지면 이 프로그램만 밀린다. 채팅은 밀리지 않는다.
+//!
+//! 7단계에서 넣는 곳이 PostgreSQL 에서 ScyllaDB 로 바뀌었다. 이 프로그램은 이제 PostgreSQL 을 모른다.
 //!
 //! 브라우저도, 게이트웨이도, 채팅 서버도 이 프로그램을 부르지 않는다. 문을 열지 않는다. 읽고 넣기만 한다.
 use std::time::Duration;
@@ -11,15 +12,15 @@ use rdkafka::consumer::{CommitMode, Consumer};
 use rdkafka::Message;
 
 // chat_server 는 이 프로젝트의 src/lib.rs 다. 세 프로그램이 함께 쓰는 것들이 들어 있다.
-use chat_server::db;
 use chat_server::kafka::{self, Record};
+use chat_server::store::Store;
 
 #[tokio::main]
 async fn main() {
-    // PostgreSQL 에 접속한다. 꺼져 있으면 시작하지 않는다.
-    let db = db::connect()
+    // ScyllaDB 에 접속한다. 꺼져 있으면 시작하지 않는다.
+    let store = Store::connect()
         .await
-        .expect("DB 에 접속할 수 없습니다. docker compose up -d 로 DB 를 먼저 켜세요");
+        .expect("ScyllaDB 에 접속할 수 없습니다. docker compose up -d 로 먼저 켜세요 (켜지는 데 1분쯤 걸립니다)");
 
     // Kafka 에 토픽이 있는지 확인하고(없으면 만들고), 읽기 시작한다.
     kafka::ensure_topic()
@@ -27,7 +28,7 @@ async fn main() {
         .expect("Kafka 에 접속할 수 없습니다. docker compose up -d 로 Kafka 를 먼저 켜세요");
     // "persist" 는 읽는 쪽의 이름이다. Kafka 가 이 이름으로 "어디까지 읽었는지"를 기억해 준다.
     let reader = kafka::reader("persist").expect("Kafka 읽기를 시작할 수 없습니다");
-    println!("저장 담당: Kafka 의 {} 을(를) 읽어 DB 에 넣는 중", kafka::TOPIC);
+    println!("저장 담당: Kafka 의 {} 을(를) 읽어 ScyllaDB 에 넣는 중", kafka::TOPIC);
 
     loop {
         // 두 가지를 동시에 기다린다: 끄라는 신호(Ctrl+C), 다음 기록 하나.
@@ -49,18 +50,16 @@ async fn main() {
         // 기록의 내용(JSON)을 메시지로 되돌린다.
         match record.payload().map(serde_json::from_slice::<Record>) {
             Some(Ok(message)) => {
-                // DB 에 넣는다. 될 때까지 다시 한다.
-                // 넣지 못한 채 다음으로 넘어가면 그 메시지는 영영 DB 에 없게 된다.
+                // ScyllaDB 에 넣는다. 될 때까지 다시 한다.
+                // 넣지 못한 채 다음으로 넘어가면 그 메시지는 영영 저장소에 없게 된다.
                 // 여기서 기다리는 동안 채팅은 멈추지 않는다. Kafka 에 읽을 것이 쌓일 뿐이다.
+                //
+                // 같은 메시지를 두 번 넣어도 된다. 같은 방, 같은 순번이면 같은 줄을 덮어쓸 뿐이다. (store.rs)
+                // 그래서 6단계에 있던 "이미 있으면 넘어간다"는 확인이 없어졌다.
                 loop {
-                    match db::save_message(&db, message.seq, message.room_id, &message.name, &message.body).await {
-                        Ok(true) => {
+                    match store.save_message(message.room_id, message.seq, &message.name, &message.body).await {
+                        Ok(()) => {
                             println!("[저장] 순번 {} ({}: {:?})", message.seq, message.name, message.body);
-                            break;
-                        }
-                        // 같은 순번이 이미 있다. 전에 넣고 나서 "읽었다"를 적기 전에 꺼졌던 것이다. 넘어간다.
-                        Ok(false) => {
-                            println!("[저장] 순번 {} 은(는) 이미 있어 넘어감", message.seq);
                             break;
                         }
                         Err(error) => {
@@ -76,9 +75,9 @@ async fn main() {
             None => {}
         }
 
-        // DB 에 넣었으니 "여기까지 읽었다"를 Kafka 에 적는다.
+        // 저장소에 넣었으니 "여기까지 읽었다"를 Kafka 에 적는다.
         // 넣기 전에 적으면 안 된다. 그 사이에 꺼지면 넣지 못한 메시지를 읽은 것으로 치게 된다.
-        // 넣은 뒤에 적으면, 그 사이에 꺼졌을 때 같은 메시지를 한 번 더 읽는다. 그것은 위에서 "이미 있다"로 걸러진다.
+        // 넣은 뒤에 적으면, 그 사이에 꺼졌을 때 같은 메시지를 한 번 더 읽는다. 그래도 같은 줄을 덮어쓸 뿐이라 괜찮다.
         if let Err(error) = reader.commit_message(&record, CommitMode::Async) {
             println!("[Kafka] 어디까지 읽었는지 적지 못함: {error}");
         }

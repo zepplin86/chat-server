@@ -11,12 +11,13 @@ use chat_server::bus;
 use chat_server::db;
 use chat_server::kafka::{self, Record};
 use chat_server::proto::chat_server::Chat;
+use chat_server::store::StoreError;
 use chat_server::proto::{ChatMessage, JoinReply, JoinRequest, SayReply, SayRequest};
 use chat_server::to_line;
 
 use crate::state::AppState;
 
-/// gRPC 요청을 처리하는 쪽. DB, NATS, Kafka 를 쓰므로 묶음을 들고 있는다.
+/// gRPC 요청을 처리하는 쪽. PostgreSQL, ScyllaDB, NATS, Kafka 를 쓰므로 묶음을 들고 있는다.
 pub struct ChatService {
     pub state: Arc<AppState>,
 }
@@ -24,6 +25,12 @@ pub struct ChatService {
 /// DB 가 실패했을 때. 자세한 내용은 로그에만 남기고 게이트웨이에는 "안쪽 오류"라고만 알린다.
 /// Status 는 gRPC 의 실패 응답이다. HTTP 의 응답 번호(401, 404...)처럼 종류가 정해져 있다.
 fn db_error(error: sqlx::Error) -> Status {
+    println!("[서버 오류] {error}");
+    Status::internal("서버 오류")
+}
+
+/// ScyllaDB 가 실패했을 때. 위와 같다.
+fn store_error(error: StoreError) -> Status {
     println!("[서버 오류] {error}");
     Status::internal("서버 오류")
 }
@@ -51,11 +58,14 @@ impl Chat for ChatService {
             .map_err(db_error)?
             .ok_or_else(|| Status::not_found("그런 방이 없습니다"))?;
 
-        // 이 방의 최근 대화를 읽는다. 전부가 아니라 가장 최근 몇 개만이다.
-        // 방금 한 말이 아직 DB 에 안 들어갔을 수 있다. 저장 담당이 넣기 전이면 여기에 없다.
-        let recent: Vec<ChatMessage> = db::load_recent_messages(db, request.room_id)
+        // 이 방의 최근 대화를 ScyllaDB 에서 읽는다. 전부가 아니라 가장 최근 몇 개만이다.
+        // 방금 한 말이 아직 안 들어갔을 수 있다. 저장 담당이 넣기 전이면 여기에 없다.
+        let recent: Vec<ChatMessage> = self
+            .state
+            .store
+            .load_recent_messages(request.room_id)
             .await
-            .map_err(db_error)?
+            .map_err(store_error)?
             .into_iter()
             .map(|(seq, name, body)| ChatMessage { seq, name, body })
             .collect();
@@ -76,8 +86,8 @@ impl Chat for ChatService {
         // 순번을 직접 매긴다. DB 에 넣고 받아 오던 것을 이제 기다리지 않는다. (seq.rs)
         let seq = self.state.seq.next();
 
-        // Kafka 에 적는다. DB 에 넣는 일은 저장 담당이 이것을 읽어서 따로 한다.
-        // 여기서 DB 를 기다리지 않으므로, DB 가 느리거나 꺼져 있어도 말하기는 늦어지지 않는다.
+        // Kafka 에 적는다. 저장소(ScyllaDB)에 넣는 일은 저장 담당이 이것을 읽어서 따로 한다.
+        // 여기서 저장소를 기다리지 않으므로, 저장소가 느리거나 꺼져 있어도 말하기는 늦어지지 않는다.
         // 적지 못한 메시지는 내보내지 않는다. 내보내고 나서 남기지 못하면,
         // 지금 본 사람과 나중에 온 사람이 다른 대화를 보게 된다.
         let record = Record { seq, room_id, name, body };
@@ -92,7 +102,7 @@ impl Chat for ChatService {
         match bus::publish(&self.state.nats, room_id, to_line(seq, &name, &body)).await {
             // 성공은 "NATS 로 가는 줄에 세웠다"는 뜻이다. 게이트웨이에 도착했다는 뜻이 아니다.
             Ok(()) => println!("[말하기] {name}: {body:?} → 순번 {seq}, Kafka 에 적고 NATS 에 내보냄"),
-            // 적기는 했는데 내보내지 못했다. 지금 접속한 사람은 못 보고, 다시 들어오면 DB 에서 읽어 본다.
+            // 적기는 했는데 내보내지 못했다. 지금 접속한 사람은 못 보고, 다시 들어오면 저장소에서 읽어 본다.
             // 남기는 일은 끝났으므로 게이트웨이에는 성공으로 답한다.
             Err(error) => println!("[말하기] {name}: 순번 {seq} 적기는 했으나 NATS 에 내보내지 못함: {error}"),
         }

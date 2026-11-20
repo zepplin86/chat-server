@@ -1,17 +1,21 @@
 //! 프로그램들이 함께 쓰는 것들.
 //!
-//! 이 프로젝트는 프로그램 세 개를 만든다. (src/bin/ 아래 폴더 하나가 프로그램 하나다)
+//! 이 프로젝트는 프로그램 세 개와 한 번 쓰는 도구 하나를 만든다. (src/bin/ 아래 폴더 하나가 프로그램 하나다)
 //! - src/bin/gateway: 게이트웨이. 브라우저 연결(WebSocket)을 붙들고 있는다.
 //! - src/bin/chat: 채팅 서버. 로그인, 방, 순번 같은 로직을 맡는다.
-//! - src/bin/persist: 저장 담당. Kafka 에 적힌 메시지를 읽어 DB 에 넣는다.
+//! - src/bin/persist: 저장 담당. Kafka 에 적힌 메시지를 읽어 ScyllaDB 에 넣는다.
+//! - src/bin/migrate: PostgreSQL 에 있던 옛 메시지를 ScyllaDB 로 옮기는 도구. 한 번만 돌린다.
 //!
 //! 이 파일(lib.rs)과 여기서 포함한 것은 세 프로그램이 모두 가져다 쓸 수 있다.
 
 /// NATS 와 주고받는 일. 채팅 서버는 내보내고, 게이트웨이는 받는다.
 pub mod bus;
 
-/// PostgreSQL 과 주고받는 일. 채팅 서버는 읽고, 저장 담당은 메시지를 넣는다.
+/// PostgreSQL 과 주고받는 일. 계정, 입장권, 방. 채팅 서버가 쓴다.
 pub mod db;
+
+/// ScyllaDB 와 주고받는 일. 메시지. 저장 담당은 넣고, 채팅 서버는 읽는다.
+pub mod store;
 
 /// Kafka 와 주고받는 일. 채팅 서버는 적고, 저장 담당은 읽는다.
 pub mod kafka;

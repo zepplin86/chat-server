@@ -78,7 +78,10 @@ pub async fn older_messages(
 ) -> ApiResult {
     require_user(&state, &headers).await?;
 
-    let rows = db::load_messages_before(&state.db, room_id, query.before)
+    // 메시지는 ScyllaDB 에 있다.
+    let rows = state
+        .store
+        .load_messages_before(room_id, query.before)
         .await
         .map_err(server_error)?;
     // WebSocket 으로 보내는 메시지와 같은 모양으로 만든다. (src/lib.rs 의 to_line)

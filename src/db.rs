@@ -1,6 +1,7 @@
 //! PostgreSQL 과 주고받는 일. SQL 은 전부 이 파일에만 있다.
 //!
-//! 채팅 서버는 읽을 때(로그인, 방, 지난 대화), 저장 담당은 메시지를 넣을 때 쓴다.
+//! 계정, 입장권, 방이 여기 있다. 채팅 서버가 쓴다.
+//! 메시지는 7단계부터 ScyllaDB 에 있다. (store.rs)
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 
@@ -28,6 +29,9 @@ pub async fn connect() -> Result<PgPool, sqlx::Error> {
         .execute(&mut *setup)
         .await?;
 
+    // 메시지 표. 7단계부터는 쓰지 않는다. 메시지는 ScyllaDB 에 넣고 읽는다. (store.rs)
+    // 6단계까지 쌓인 옛 메시지가 여기 남아 있어서 지우지 않고 둔다. 옮기는 프로그램(src/bin/migrate)이 읽는다.
+    //
     // 표(table)는 엑셀 시트 같은 것이다. 메시지 하나가 한 줄이 된다.
     // id 는 메시지의 순번이다. 들어온 순서를 알 수 있다.
     // (5단계까지는 DB 가 1, 2, 3... 으로 매겼다. 6단계부터는 채팅 서버가 매겨서 넣는다)
@@ -182,71 +186,10 @@ pub async fn find_session_name(db: &PgPool, token: &str) -> Result<Option<String
     .await
 }
 
-/// 메시지 하나를 저장한다. 순번(id)은 DB 가 매기지 않고 받은 것을 그대로 쓴다. (채팅 서버가 매겼다)
-/// 새로 넣었으면 true, 같은 순번이 이미 있어서 넣지 않았으면 false 를 돌려준다.
-pub async fn save_message(
-    db: &PgPool,
-    seq: i64,
-    room_id: i64,
-    name: &str,
-    body: &str,
-) -> Result<bool, sqlx::Error> {
-    // $1, $2... 자리에 뒤의 bind 값이 순서대로 들어간다.
-    // 글자를 직접 이어 붙이지 않는 이유: 사용자가 입력한 글자가 SQL 명령으로 실행되는 것을 막는다.
-    //
-    // ON CONFLICT (id) DO NOTHING 은 "같은 id 가 이미 있으면 아무것도 하지 않는다"는 뜻이다.
-    // 저장 담당은 같은 메시지를 두 번 읽을 수 있다. 두 번 넣어도 한 줄만 남게 한다.
-    let result = sqlx::query(
-        "INSERT INTO messages (id, room_id, name, body) VALUES ($1, $2, $3, $4)
-         ON CONFLICT (id) DO NOTHING",
-    )
-    .bind(seq)
-    .bind(room_id)
-    .bind(name)
-    .bind(body)
-    .execute(db)
-    .await?;
-    // rows_affected 는 이 명령으로 바뀐 줄의 수다. 넣었으면 1, 이미 있어서 안 넣었으면 0.
-    Ok(result.rows_affected() == 1)
-}
-
-/// 한 번에 보내 주는 지난 메시지의 수.
-/// 전부 보내면 메시지가 쌓일수록 들어오는 데 오래 걸린다. 한 묶음씩 끊어 보낸다.
-const PAGE_SIZE: i64 = 50;
-
-/// 그 방의 가장 최근 메시지 한 묶음을 순번이 작은 것부터 (순번, 이름, 내용) 으로 돌려준다.
-/// 방에 들어올 때 쓴다.
-pub async fn load_recent_messages(
-    db: &PgPool,
-    room_id: i64,
-) -> Result<Vec<(i64, String, String)>, sqlx::Error> {
-    // "가장 큰 수보다 앞의 것"은 곧 "가장 최근 것"이다. i64::MAX 는 i64 가 담을 수 있는 가장 큰 수.
-    load_messages_before(db, room_id, i64::MAX).await
-}
-
-/// 그 방에서 순번이 before 보다 작은 메시지 중 가장 가까운 한 묶음을,
-/// 순번이 작은 것부터 (순번, 이름, 내용) 으로 돌려준다. "이전 대화 더 보기"에 쓴다.
-///
-/// 예: before 가 151 이면 #101 ~ #150 을 돌려준다.
-pub async fn load_messages_before(
-    db: &PgPool,
-    room_id: i64,
-    before: i64,
-) -> Result<Vec<(i64, String, String)>, sqlx::Error> {
-    // before 바로 앞의 50개를 고르려면 순번이 큰 것부터(DESC) 세어 50개에서 멈춰야(LIMIT) 한다.
-    // 작은 것부터 세면 가장 오래된 50개가 나온다.
-    let mut rows: Vec<(i64, String, String)> = sqlx::query_as(
-        "SELECT id, name, body FROM messages
-         WHERE room_id = $1 AND id < $2
-         ORDER BY id DESC LIMIT $3",
-    )
-    .bind(room_id)
-    .bind(before)
-    .bind(PAGE_SIZE)
-    .fetch_all(db)
-    .await?;
-
-    // 그렇게 받은 것은 최신이 맨 앞이다. 화면에는 오래된 것부터 보여야 하므로 뒤집는다.
-    rows.reverse();
-    Ok(rows)
+/// messages 표에 남아 있는 옛 메시지 전부를 (순번, 방 번호, 이름, 내용) 으로 돌려준다.
+/// ScyllaDB 로 옮길 때(src/bin/migrate) 한 번 쓴다. 평소에는 쓰지 않는다.
+pub async fn load_all_messages(db: &PgPool) -> Result<Vec<(i64, i64, String, String)>, sqlx::Error> {
+    sqlx::query_as("SELECT id, room_id, name, body FROM messages ORDER BY id")
+        .fetch_all(db)
+        .await
 }
