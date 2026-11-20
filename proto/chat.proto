@@ -1,0 +1,60 @@
+// 게이트웨이와 채팅 서버 사이의 약속.
+//
+// 두 프로그램은 서로 다른 프로세스라서 함수를 직접 부를 수 없다.
+// 그래서 "어떤 일을 부탁할 수 있고, 무엇을 보내면 무엇이 돌아오는지"를 이 파일에 먼저 적어 둔다.
+// 빌드할 때 이 파일에서 Rust 코드가 만들어진다. (build.rs)
+// 부탁하는 쪽(게이트웨이)과 해 주는 쪽(채팅 서버)이 같은 파일에서 나온 코드를 쓰므로 모양이 어긋날 수 없다.
+//
+// 이렇게 다른 프로세스의 함수를 부르는 방식을 gRPC 라고 한다.
+syntax = "proto3";
+
+package chat;
+
+// 채팅 서버가 해 주는 일. 게이트웨이가 부른다.
+service Chat {
+  // 입장: 입장권과 방을 확인하고, 그 방의 최근 대화를 준다.
+  rpc Join(JoinRequest) returns (JoinReply);
+  // 말하기: 메시지를 저장하고 모든 게이트웨이에 알린다. 매겨진 순번을 돌려준다.
+  rpc Say(SayRequest) returns (SayReply);
+}
+
+// 칸마다 붙은 "= 1", "= 2" 는 값이 아니라 칸의 번호다.
+// 주고받을 때 칸 이름 대신 이 번호를 적어 보낸다. 한 번 정한 번호는 바꾸지 않는다.
+
+message JoinRequest {
+  // 로그인해서 받은 입장권.
+  string token = 1;
+  // 들어갈 방의 번호.
+  int64 room_id = 2;
+}
+
+message JoinReply {
+  // 입장권 주인의 이름.
+  string name = 1;
+  // 방의 이름.
+  string room_name = 2;
+  // 그 방의 최근 대화. 순번이 작은 것부터. (repeated 는 "여러 개"라는 뜻이다)
+  repeated ChatMessage recent = 3;
+}
+
+// 대화 한 줄.
+message ChatMessage {
+  // DB 가 매긴 순번.
+  int64 seq = 1;
+  // 말한 사람.
+  string name = 2;
+  // 내용.
+  string body = 3;
+}
+
+message SayRequest {
+  int64 room_id = 1;
+  // 말한 사람. 게이트웨이가 입장할 때 확인해 둔 이름을 적어 보낸다.
+  string name = 2;
+  string body = 3;
+}
+
+message SayReply {
+  // 이 메시지에 매겨진 순번.
+  int64 seq = 1;
+}
